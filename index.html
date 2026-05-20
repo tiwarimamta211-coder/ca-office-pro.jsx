@@ -1,1208 +1,660 @@
-import { useState, useRef, useEffect } from "react";
-
-// ── colour tokens ──────────────────────────────────────────────
-const C = {
-  bg:      "#07090f",
-  surface: "#0e1219",
-  card:    "#131825",
-  border:  "#1e2840",
-  accent:  "#00e5b0",
-  blue:    "#3d8bff",
-  orange:  "#ff7043",
-  yellow:  "#ffd740",
-  red:     "#ff4d6a",
-  muted:   "#4a5878",
-  sub:     "#8899b0",
-  text:    "#dce6f5",
-};
-
-const NAV = [
-  { id:"dashboard",  icon:"⬡", label:"Dashboard",       hi:"डैशबोर्ड" },
-  { id:"tally",      icon:"⬢", label:"Tally AI Entry",  hi:"टैली ऑटो एंट्री" },
-  { id:"gst_auto",   icon:"◈", label:"Auto GST Filing", hi:"ऑटो GST फाइलिंग" },
-  { id:"gst3b",      icon:"◉", label:"GSTR-3B Auto",    hi:"3B ऑटो फाइलिंग" },
-  { id:"gst2b",      icon:"◧", label:"GSTR-2B Recon",   hi:"2B रिकन्सिलेशन" },
-  { id:"gst1",       icon:"◪", label:"GSTR-1",          hi:"GSTR-1" },
-  { id:"tds",        icon:"◫", label:"TDS / TCS",       hi:"TDS/TCS" },
-  { id:"reports",    icon:"◬", label:"Reports",         hi:"रिपोर्ट्स" },
-  { id:"ai",         icon:"✦", label:"AI Assistant",    hi:"AI सहायक" },
-];
-
-// ── tiny helpers ───────────────────────────────────────────────
-const Tag = ({ label, color }) => (
-  <span style={{ fontSize:11, padding:"2px 10px", borderRadius:20,
-    background: color+"22", color, fontFamily:"monospace" }}>{label}</span>
-);
-
-const Btn = ({ children, onClick, variant="primary", disabled, style={} }) => {
-  const base = {
-    cursor: disabled ? "default" : "pointer",
-    border: "none", borderRadius:8, fontWeight:600,
-    fontFamily:"inherit", fontSize:13, transition:"all .2s",
-    padding:"9px 20px", opacity: disabled ? .5 : 1, ...style
-  };
-  const variants = {
-    primary:  { background:`linear-gradient(135deg,${C.accent},#00b894)`, color:"#07090f" },
-    blue:     { background:`linear-gradient(135deg,${C.blue},#2563eb)`,   color:"#fff" },
-    ghost:    { background:C.card, color:C.sub, border:`1px solid ${C.border}` },
-    danger:   { background:`linear-gradient(135deg,${C.red},#c0392b)`,    color:"#fff" },
-    orange:   { background:`linear-gradient(135deg,${C.orange},#e64a19)`, color:"#fff" },
-  };
-  return <button style={{...base,...variants[variant]}} onClick={!disabled ? onClick : undefined}>{children}</button>;
-};
-
-const Field = ({ label, value, onChange, type="text", placeholder="", options }) => (
-  <div style={{ marginBottom:14 }}>
-    <label style={{ fontSize:11, color:C.muted, fontFamily:"monospace",
-      display:"block", marginBottom:5, textTransform:"uppercase", letterSpacing:1 }}>{label}</label>
-    {options
-      ? <select value={value} onChange={e=>onChange(e.target.value)}
-          style={{ width:"100%", background:C.card, border:`1px solid ${C.border}`,
-            color:C.text, borderRadius:8, padding:"9px 12px",
-            fontFamily:"inherit", fontSize:14 }}>
-          {options.map(o=><option key={o}>{o}</option>)}
-        </select>
-      : <input type={type} value={value} onChange={e=>onChange(e.target.value)}
-          placeholder={placeholder}
-          style={{ width:"100%", background:C.card, border:`1px solid ${C.border}`,
-            color:C.text, borderRadius:8, padding:"9px 12px",
-            fontFamily:"inherit", fontSize:14, boxSizing:"border-box" }} />
-    }
-  </div>
-);
-
-// ── progress stepper ───────────────────────────────────────────
-const Stepper = ({ steps, current }) => (
-  <div style={{ display:"flex", alignItems:"center", gap:0, marginBottom:24 }}>
-    {steps.map((s,i)=>(
-      <div key={i} style={{ display:"flex", alignItems:"center", flex: i<steps.length-1?1:"auto" }}>
-        <div style={{ display:"flex", flexDirection:"column", alignItems:"center", gap:4 }}>
-          <div style={{ width:32, height:32, borderRadius:"50%", display:"flex",
-            alignItems:"center", justifyContent:"center", fontSize:13, fontWeight:700,
-            background: i<current ? C.accent : i===current ? C.blue : C.card,
-            color: i<=current ? "#07090f" : C.muted,
-            border: `2px solid ${i<current ? C.accent : i===current ? C.blue : C.border}`,
-            transition:"all .3s" }}>
-            {i < current ? "✓" : i+1}
-          </div>
-          <span style={{ fontSize:10, color: i===current ? C.blue : C.muted,
-            fontFamily:"monospace", whiteSpace:"nowrap" }}>{s}</span>
-        </div>
-        {i < steps.length-1 &&
-          <div style={{ flex:1, height:2, background: i<current ? C.accent : C.border,
-            margin:"0 6px", marginBottom:16, transition:"background .3s" }} />}
-      </div>
-    ))}
-  </div>
-);
-
-// ── TALLY AI ENTRY MODULE ──────────────────────────────────────
-function TallyModule() {
-  const [step, setStep]           = useState(0);
-  const [files, setFiles]         = useState([]);
-  const [extracting, setExtracting] = useState(false);
-  const [extracted, setExtracted] = useState([]);
-  const [approving, setApproving] = useState(false);
-  const [done, setDone]           = useState(false);
-  const [editIdx, setEditIdx]     = useState(null);
-  const fileRef = useRef();
-
-  const handleFiles = (e) => {
-    const arr = Array.from(e.target.files);
-    setFiles(arr);
-  };
-
-  const extractData = async () => {
-    if (!files.length) return;
-    setExtracting(true);
-    setStep(1);
-
-    const results = [];
-    for (const file of files) {
-      // read as base64
-      const b64 = await new Promise(res => {
-        const r = new FileReader();
-        r.onload = () => res(r.result.split(",")[1]);
-        r.readAsDataURL(file);
-      });
-
-      const isImage = file.type.startsWith("image/");
-      const isPDF   = file.type === "application/pdf";
-
-      let userContent;
-      if (isImage) {
-        userContent = [
-          { type:"image", source:{ type:"base64",
-              media_type: file.type, data: b64 } },
-          { type:"text",  text: `Extract all accounting data from this bill/invoice image.
-Return ONLY a JSON object with these fields (no markdown, no backticks):
-{
-  "party_name": "",
-  "gstin": "",
-  "invoice_no": "",
-  "date": "",
-  "items": [{"description":"","qty":0,"rate":0,"amount":0}],
-  "subtotal": 0,
-  "igst": 0,
-  "cgst": 0,
-  "sgst": 0,
-  "total": 0,
-  "voucher_type": "Purchase",
-  "ledger_head": "Purchase Account",
-  "narration": "",
-  "tds_applicable": false,
-  "tds_section": "",
-  "tds_amount": 0
-}` }
-        ];
-      } else {
-        userContent = `This is a bill/invoice named "${file.name}". 
-Extract accounting data and return ONLY a JSON object with these fields:
-{
-  "party_name": "Sample Supplier Pvt Ltd",
-  "gstin": "27AABCS1234F1Z5",
-  "invoice_no": "INV-2025-001",
-  "date": "01/04/2025",
-  "items": [{"description":"Services","qty":1,"rate":10000,"amount":10000}],
-  "subtotal": 10000,
-  "igst": 1800,
-  "cgst": 0,
-  "sgst": 0,
-  "total": 11800,
-  "voucher_type": "Purchase",
-  "ledger_head": "Purchase Account",
-  "narration": "Purchase from Sample Supplier",
-  "tds_applicable": true,
-  "tds_section": "194C",
-  "tds_amount": 100
-}`;
-      }
-
-      try {
-        const resp = await fetch("https://api.anthropic.com/v1/messages", {
-          method:"POST",
-          headers:{ "Content-Type":"application/json" },
-          body: JSON.stringify({
-            model:"claude-sonnet-4-20250514",
-            max_tokens:1000,
-            system:`You are an expert Indian CA accountant. Extract invoice/bill data accurately.
-Always return pure JSON only — no markdown fences, no explanation.
-For Indian GST invoices: identify IGST vs CGST+SGST split correctly.
-Detect TDS applicability based on nature of expense.`,
-            messages:[{ role:"user", content: userContent }]
-          })
-        });
-        const data = await resp.json();
-        const raw  = data.content?.[0]?.text || "{}";
-        const clean = raw.replace(/```json|```/g,"").trim();
-        const obj  = JSON.parse(clean);
-        results.push({ ...obj, _file: file.name, _status:"pending" });
-      } catch {
-        results.push({
-          party_name: file.name, gstin:"", invoice_no:"", date:"",
-          subtotal:0, igst:0, cgst:0, sgst:0, total:0,
-          voucher_type:"Purchase", ledger_head:"Purchase Account",
-          narration:"", tds_applicable:false, tds_section:"", tds_amount:0,
-          _file: file.name, _status:"error"
-        });
-      }
-    }
-    setExtracted(results);
-    setExtracting(false);
-    setStep(2);
-  };
-
-  const approveTally = async () => {
-    setApproving(true);
-    setStep(3);
-    await new Promise(r => setTimeout(r, 2000)); // simulate Tally push
-    setApproving(false);
-    setDone(true);
-    setStep(4);
-  };
-
-  const reset = () => {
-    setStep(0); setFiles([]); setExtracted([]);
-    setDone(false); setEditIdx(null);
-  };
-
-  const updateField = (idx, key, val) => {
-    setExtracted(prev => prev.map((e,i) => i===idx ? {...e,[key]:val} : e));
-  };
-
-  return (
-    <div>
-      <Stepper steps={["Upload","Extract","Verify","Push","Done"]} current={step} />
-
-      {/* STEP 0 — Upload */}
-      {step === 0 && (
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20 }}>
-          <div style={{ background:C.card, border:`2px dashed ${C.border}`, borderRadius:16,
-            padding:32, textAlign:"center", cursor:"pointer" }}
-            onClick={()=>fileRef.current.click()}>
-            <input ref={fileRef} type="file" multiple accept="image/*,.pdf"
-              style={{ display:"none" }} onChange={handleFiles} />
-            <div style={{ fontSize:40, marginBottom:12 }}>📄</div>
-            <div style={{ fontSize:16, fontWeight:600, marginBottom:6 }}>Bills / Invoices Upload करें</div>
-            <div style={{ fontSize:13, color:C.sub, marginBottom:16 }}>
-              Photo, Scan, PDF — सब चलेगा
-            </div>
-            <Btn variant="ghost">📁 Files Choose करें</Btn>
-            {files.length > 0 && (
-              <div style={{ marginTop:16, fontSize:13, color:C.accent }}>
-                ✅ {files.length} file{files.length>1?"s":""} selected
-              </div>
-            )}
-          </div>
-
-          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:16, padding:24 }}>
-            <div style={{ fontSize:14, color:C.accent, marginBottom:16, letterSpacing:1 }}>क्या-क्या upload कर सकते हैं?</div>
-            {[
-              ["📷","Mobile से ली bill की photo","JPG / PNG"],
-              ["📄","Scanned invoice PDF","PDF"],
-              ["🧾","E-invoice / GST bill","PDF / Image"],
-              ["🏦","Bank statement","PDF"],
-              ["📊","Purchase / Sales register","Excel / CSV"],
-            ].map(([ico,label,fmt],i)=>(
-              <div key={i} style={{ display:"flex", alignItems:"center", gap:12,
-                padding:"10px 0", borderBottom:`1px solid ${C.border}44` }}>
-                <span style={{ fontSize:20 }}>{ico}</span>
-                <div style={{ flex:1 }}>
-                  <div style={{ fontSize:13 }}>{label}</div>
-                  <div style={{ fontSize:11, color:C.muted, fontFamily:"monospace" }}>{fmt}</div>
-                </div>
-              </div>
-            ))}
-            <div style={{ marginTop:20 }}>
-              <Btn onClick={extractData} disabled={!files.length} style={{ width:"100%" }}>
-                🤖 AI से Data Extract करें →
-              </Btn>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* STEP 1 — Extracting */}
-      {step === 1 && (
-        <div style={{ textAlign:"center", padding:"60px 0" }}>
-          <div style={{ fontSize:48, marginBottom:20, animation:"spin 2s linear infinite" }}>⚙️</div>
-          <div style={{ fontSize:20, fontWeight:600, marginBottom:8 }}>AI Data Extract कर रहा है...</div>
-          <div style={{ fontSize:14, color:C.sub, marginBottom:24 }}>
-            {files.length} file{files.length>1?"s":""} process हो रही हैं — OCR + AI Analysis
-          </div>
-          <div style={{ background:C.card, borderRadius:12, padding:16, maxWidth:400, margin:"0 auto" }}>
-            {["📷 Image scan हो रही है","🔍 Text extract हो रहा है",
-              "🧠 AI data पढ़ रहा है","📋 Tally format बन रहा है"].map((s,i)=>(
-              <div key={i} style={{ display:"flex", alignItems:"center", gap:10,
-                padding:"8px 0", fontSize:13, color:C.sub }}>
-                <span style={{ animation:`pulse ${1+i*.3}s infinite` }}>⟳</span> {s}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* STEP 2 — Verify */}
-      {step === 2 && (
-        <div>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:16 }}>
-            <div>
-              <div style={{ fontSize:16, fontWeight:700 }}>✅ {extracted.length} Entries Extracted</div>
-              <div style={{ fontSize:12, color:C.sub }}>Review करें, edit करें, फिर Tally में push करें</div>
-            </div>
-            <div style={{ display:"flex", gap:10 }}>
-              <Btn variant="ghost" onClick={reset}>↩ Reset</Btn>
-              <Btn variant="orange" onClick={approveTally}>⬢ Tally में Push करें →</Btn>
-            </div>
-          </div>
-
-          {extracted.map((e,idx)=>(
-            <div key={idx} style={{ background:C.card, border:`1px solid ${e._status==="error" ? C.red+"44" : C.border}`,
-              borderRadius:14, padding:20, marginBottom:14 }}>
-              <div style={{ display:"flex", justifyContent:"space-between", alignItems:"flex-start", marginBottom:12 }}>
-                <div>
-                  <div style={{ fontSize:15, fontWeight:700 }}>{e.party_name || "Unknown Party"}</div>
-                  <div style={{ fontSize:11, color:C.muted, fontFamily:"monospace" }}>
-                    {e.invoice_no} · {e.date} · {e._file}
-                  </div>
-                </div>
-                <div style={{ display:"flex", gap:8, alignItems:"center" }}>
-                  <Tag label={e.voucher_type} color={C.blue} />
-                  {e.tds_applicable && <Tag label={"TDS "+e.tds_section} color={C.yellow} />}
-                  <button onClick={()=>setEditIdx(editIdx===idx?null:idx)}
-                    style={{ background:C.border, border:"none", color:C.sub,
-                      padding:"4px 12px", borderRadius:6, cursor:"pointer", fontSize:12 }}>
-                    {editIdx===idx ? "✓ Done" : "✏ Edit"}
-                  </button>
-                </div>
-              </div>
-
-              {editIdx === idx ? (
-                <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:12 }}>
-                  {[
-                    ["Party Name","party_name"],["GSTIN","gstin"],
-                    ["Invoice No","invoice_no"],["Date","date"],
-                    ["Subtotal","subtotal"],["IGST","igst"],
-                    ["CGST","cgst"],["SGST","sgst"],["Total","total"],
-                  ].map(([lbl,key])=>(
-                    <div key={key}>
-                      <label style={{ fontSize:10, color:C.muted, fontFamily:"monospace",
-                        display:"block", marginBottom:4, textTransform:"uppercase" }}>{lbl}</label>
-                      <input value={e[key]||""} onChange={ev=>updateField(idx,key,ev.target.value)}
-                        style={{ width:"100%", background:C.surface, border:`1px solid ${C.border}`,
-                          color:C.text, borderRadius:6, padding:"7px 10px",
-                          fontFamily:"inherit", fontSize:13, boxSizing:"border-box" }} />
-                    </div>
-                  ))}
-                  <div style={{ gridColumn:"1/-1" }}>
-                    <label style={{ fontSize:10, color:C.muted, fontFamily:"monospace",
-                      display:"block", marginBottom:4 }}>LEDGER HEAD</label>
-                    <select value={e.ledger_head||""} onChange={ev=>updateField(idx,"ledger_head",ev.target.value)}
-                      style={{ background:C.surface, border:`1px solid ${C.border}`,
-                        color:C.text, borderRadius:6, padding:"7px 10px", fontFamily:"inherit" }}>
-                      {["Purchase Account","Expense Account","Fixed Assets",
-                        "Sales Account","Sundry Creditors","Sundry Debtors"].map(o=><option key={o}>{o}</option>)}
-                    </select>
-                  </div>
-                </div>
-              ) : (
-                <div style={{ display:"flex", gap:24 }}>
-                  {[["Subtotal","subtotal"],["IGST","igst"],["CGST","cgst"],
-                    ["SGST","sgst"],["Total","total"]].map(([lbl,key])=>(
-                    <div key={key}>
-                      <div style={{ fontSize:10, color:C.muted, fontFamily:"monospace" }}>{lbl}</div>
-                      <div style={{ fontSize:14, color: key==="total" ? C.accent : C.text, fontWeight: key==="total"?700:400 }}>
-                        ₹{Number(e[key]||0).toLocaleString("en-IN")}
-                      </div>
-                    </div>
-                  ))}
-                  {e.tds_amount > 0 && (
-                    <div>
-                      <div style={{ fontSize:10, color:C.yellow, fontFamily:"monospace" }}>TDS ({e.tds_section})</div>
-                      <div style={{ fontSize:14, color:C.yellow }}>₹{Number(e.tds_amount).toLocaleString("en-IN")}</div>
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-          ))}
-        </div>
-      )}
-
-      {/* STEP 3 — Pushing */}
-      {step === 3 && (
-        <div style={{ textAlign:"center", padding:"60px 0" }}>
-          <div style={{ fontSize:48, marginBottom:20 }}>⬢</div>
-          <div style={{ fontSize:20, fontWeight:600, marginBottom:8 }}>Tally में Data Push हो रहा है...</div>
-          <div style={{ fontSize:14, color:C.sub, marginBottom:24 }}>XML format → Tally Prime → Voucher Create</div>
-          <div style={{ background:C.card, borderRadius:12, padding:16, maxWidth:400, margin:"0 auto" }}>
-            {["📋 XML Voucher format बन रहा है","⬢ Tally Prime से connect हो रहा है",
-              "✅ Ledger entries create हो रही हैं","💰 GST entries post हो रही हैं"].map((s,i)=>(
-              <div key={i} style={{ display:"flex", alignItems:"center", gap:10,
-                padding:"8px 0", fontSize:13, color:C.sub, borderBottom:`1px solid ${C.border}33` }}>
-                <span style={{ color:C.accent }}>→</span> {s}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {/* STEP 4 — Done */}
-      {step === 4 && (
-        <div style={{ textAlign:"center", padding:"50px 0" }}>
-          <div style={{ fontSize:56, marginBottom:16 }}>🎉</div>
-          <div style={{ fontSize:22, fontWeight:700, color:C.accent, marginBottom:8 }}>
-            Tally Entry Complete!
-          </div>
-          <div style={{ fontSize:14, color:C.sub, marginBottom:32 }}>
-            {extracted.length} vouchers successfully Tally Prime में post हो गए
-          </div>
-          <div style={{ display:"flex", gap:12, justifyContent:"center" }}>
-            <Btn onClick={reset}>📄 और Bills Upload करें</Btn>
-            <Btn variant="ghost">📊 Tally Report देखें</Btn>
-          </div>
-        </div>
-      )}
-
-      <style>{`
-        @keyframes spin { from{transform:rotate(0)} to{transform:rotate(360deg)} }
-        @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.3} }
-      `}</style>
-    </div>
-  );
-}
-
-// ── AUTO GST FILING MODULE ─────────────────────────────────────
-function AutoGSTModule() {
-  const [step, setStep]       = useState(0);
-  const [client, setClient]   = useState("Sharma Traders");
-  const [period, setPeriod]   = useState("March 2025");
-  const [gstType, setGstType] = useState("GSTR-1");
-  const [loading, setLoading] = useState(false);
-  const [analysis, setAnalysis] = useState(null);
-  const [filing, setFiling]   = useState(false);
-  const [filed, setFiled]     = useState(false);
-
-  const CLIENTS = ["Sharma Traders","Gupta Enterprises","Mehta & Sons","Patel Brothers"];
-  const PERIODS = ["March 2025","February 2025","January 2025","December 2024"];
-  const TYPES   = ["GSTR-1","GSTR-3B","GSTR-2B Reconciliation","GSTR-9 Annual"];
-
-  const analyzeAndPrepare = async () => {
-    setLoading(true);
-    setStep(1);
-    try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514",
-          max_tokens:1000,
-          system:`You are an expert Indian GST consultant. Generate realistic GST filing data for Indian businesses.
-Return ONLY pure JSON, no markdown, no backticks.`,
-          messages:[{ role:"user", content:`Generate ${gstType} filing data for ${client} for ${period}.
-Return JSON:
-{
-  "client": "${client}",
-  "gstin": "07AABCS1234F1Z5",
-  "period": "${period}",
-  "filing_type": "${gstType}",
-  "summary": {
-    "taxable_turnover": 0,
-    "exempt_turnover": 0,
-    "b2b_invoices": 0,
-    "b2c_invoices": 0,
-    "igst": 0,
-    "cgst": 0,
-    "sgst": 0,
-    "cess": 0,
-    "total_tax": 0,
-    "itc_available": 0,
-    "net_payable": 0
-  },
-  "compliance_check": [
-    {"item": "check item", "status": "OK or Warning or Error", "note": "detail"}
-  ],
-  "late_fee": 0,
-  "interest": 0,
-  "due_date": "20 Apr 2025",
-  "days_remaining": 8,
-  "recommendations": ["recommendation 1", "recommendation 2"]
-}` }]
-        })
-      });
-      const data = await resp.json();
-      const raw  = data.content?.[0]?.text || "{}";
-      const obj  = JSON.parse(raw.replace(/```json|```/g,"").trim());
-      setAnalysis(obj);
-    } catch {
-      setAnalysis({
-        client, gstin:"07AABCS1234F1Z5", period, filing_type:gstType,
-        summary:{ taxable_turnover:842500, exempt_turnover:0,
-          b2b_invoices:24, b2c_invoices:38, igst:45000, cgst:18000,
-          sgst:18000, cess:0, total_tax:81000, itc_available:62000, net_payable:19000 },
-        compliance_check:[
-          { item:"GSTR-1 Filed", status:"OK", note:"Filed on 10 Apr" },
-          { item:"ITC Reconciliation", status:"Warning", note:"₹2,400 mismatch found" },
-          { item:"Reverse Charge", status:"OK", note:"Not applicable" },
-          { item:"Late Fee", status:"OK", note:"No late fee applicable" },
-        ],
-        late_fee:0, interest:0, due_date:"20 Apr 2025", days_remaining:8,
-        recommendations:["ITC mismatch ₹2,400 को resolve करें","GSTR-2B से books reconcile करें"]
-      });
-    }
-    setLoading(false);
-    setStep(2);
-  };
-
-  const fileReturn = async () => {
-    setFiling(true);
-    setStep(3);
-    await new Promise(r=>setTimeout(r,2500));
-    setFiling(false);
-    setFiled(true);
-    setStep(4);
-  };
-
-  const reset = () => { setStep(0); setAnalysis(null); setFiled(false); };
-
-  const statusColor = s => s==="OK" ? C.accent : s==="Warning" ? C.yellow : C.red;
-
-  return (
-    <div>
-      <Stepper steps={["Setup","Analyze","Review","File","Done"]} current={step} />
-
-      {step === 0 && (
-        <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:20 }}>
-          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:16, padding:24 }}>
-            <div style={{ fontSize:14, color:C.accent, marginBottom:20, letterSpacing:1 }}>GST FILING SETUP</div>
-            <Field label="Client" value={client} onChange={setClient} options={CLIENTS} />
-            <Field label="Tax Period" value={period} onChange={setPeriod} options={PERIODS} />
-            <Field label="Return Type" value={gstType} onChange={setGstType} options={TYPES} />
-            <div style={{ marginTop:20 }}>
-              <Btn style={{ width:"100%" }} onClick={analyzeAndPrepare}>
-                🤖 AI से Analyze & Prepare करें →
-              </Btn>
-            </div>
-          </div>
-
-          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:16, padding:24 }}>
-            <div style={{ fontSize:14, color:C.accent, marginBottom:16, letterSpacing:1 }}>AUTO FILING क्या करेगा?</div>
-            {[
-              ["🧮","Data automatically calculate होगा","Turnover, Tax, ITC सब"],
-              ["✅","Compliance check होगी","Errors और warnings दिखेंगे"],
-              ["📋","JSON / XML generate होगा","GST Portal format में"],
-              ["🚀","Portal पर file होगा","ARN number मिलेगा"],
-              ["📧","Confirmation email जाएगा","Client को auto notify"],
-            ].map(([ico,t,s],i)=>(
-              <div key={i} style={{ display:"flex", gap:12, padding:"10px 0",
-                borderBottom:`1px solid ${C.border}44` }}>
-                <span style={{ fontSize:20 }}>{ico}</span>
-                <div>
-                  <div style={{ fontSize:13, fontWeight:600 }}>{t}</div>
-                  <div style={{ fontSize:11, color:C.muted }}>{s}</div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {step === 1 && (
-        <div style={{ textAlign:"center", padding:"60px 0" }}>
-          <div style={{ fontSize:48, marginBottom:16 }}>🧮</div>
-          <div style={{ fontSize:20, fontWeight:600, marginBottom:8 }}>AI Data Analyze कर रहा है...</div>
-          <div style={{ fontSize:14, color:C.sub }}>
-            {gstType} · {client} · {period}
-          </div>
-        </div>
-      )}
-
-      {step === 2 && analysis && (
-        <div>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
-            <div>
-              <div style={{ fontSize:16, fontWeight:700 }}>{analysis.filing_type} — {analysis.client}</div>
-              <div style={{ fontSize:12, color:C.sub }}>
-                GSTIN: {analysis.gstin} · {analysis.period} · Due: {analysis.due_date}
-                <span style={{ marginLeft:10, color: analysis.days_remaining <= 3 ? C.red : C.yellow }}>
-                  ({analysis.days_remaining} days बाकी)
-                </span>
-              </div>
-            </div>
-            <div style={{ display:"flex", gap:10 }}>
-              <Btn variant="ghost" onClick={reset}>↩ Back</Btn>
-              <Btn variant="orange" onClick={fileReturn}>🚀 File Now →</Btn>
-            </div>
-          </div>
-
-          <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr", gap:16, marginBottom:16 }}>
-            {/* Summary */}
-            <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:14, padding:20 }}>
-              <div style={{ fontSize:13, color:C.accent, marginBottom:14, letterSpacing:1 }}>TAX SUMMARY</div>
-              {[
-                ["Taxable Turnover", analysis.summary.taxable_turnover, C.text],
-                ["B2B Invoices",     analysis.summary.b2b_invoices+"  nos", C.sub],
-                ["B2C Invoices",     analysis.summary.b2c_invoices+"  nos", C.sub],
-                ["IGST",             analysis.summary.igst, C.blue],
-                ["CGST",             analysis.summary.cgst, C.blue],
-                ["SGST",             analysis.summary.sgst, C.blue],
-                ["Total Tax",        analysis.summary.total_tax, C.yellow],
-                ["ITC Available",    analysis.summary.itc_available, C.accent],
-                ["Net Payable",      analysis.summary.net_payable, C.orange],
-              ].map(([lbl,val,col],i)=>(
-                <div key={i} style={{ display:"flex", justifyContent:"space-between",
-                  padding:"8px 0", borderBottom:`1px solid ${C.border}33` }}>
-                  <span style={{ fontSize:13, color:C.sub }}>{lbl}</span>
-                  <span style={{ fontSize:14, color:col, fontWeight:600, fontFamily:"monospace" }}>
-                    {typeof val === "number" ? "₹"+val.toLocaleString("en-IN") : val}
-                  </span>
-                </div>
-              ))}
-            </div>
-
-            {/* Compliance */}
-            <div>
-              <div style={{ background:C.card, border:`1px solid ${C.border}`,
-                borderRadius:14, padding:20, marginBottom:14 }}>
-                <div style={{ fontSize:13, color:C.accent, marginBottom:14, letterSpacing:1 }}>COMPLIANCE CHECK</div>
-                {(analysis.compliance_check||[]).map((c,i)=>(
-                  <div key={i} style={{ display:"flex", alignItems:"flex-start", gap:10,
-                    padding:"10px 0", borderBottom:`1px solid ${C.border}33` }}>
-                    <span style={{ color:statusColor(c.status), fontSize:16 }}>
-                      {c.status==="OK"?"✓":c.status==="Warning"?"⚠":"✗"}
-                    </span>
-                    <div>
-                      <div style={{ fontSize:13, fontWeight:600 }}>{c.item}</div>
-                      <div style={{ fontSize:11, color:C.muted }}>{c.note}</div>
-                    </div>
-                    <Tag label={c.status} color={statusColor(c.status)} />
-                  </div>
-                ))}
-              </div>
-
-              {analysis.recommendations?.length > 0 && (
-                <div style={{ background:"#ffd74011", border:`1px solid ${C.yellow}33`,
-                  borderRadius:12, padding:16 }}>
-                  <div style={{ fontSize:12, color:C.yellow, marginBottom:8, letterSpacing:1 }}>💡 RECOMMENDATIONS</div>
-                  {analysis.recommendations.map((r,i)=>(
-                    <div key={i} style={{ fontSize:13, color:C.sub, padding:"4px 0" }}>→ {r}</div>
-                  ))}
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {step === 3 && (
-        <div style={{ textAlign:"center", padding:"60px 0" }}>
-          <div style={{ fontSize:48, marginBottom:16 }}>🚀</div>
-          <div style={{ fontSize:20, fontWeight:600, marginBottom:8 }}>GST Portal पर File हो रहा है...</div>
-          <div style={{ background:C.card, borderRadius:12, padding:16, maxWidth:400, margin:"20px auto 0" }}>
-            {["📋 JSON Payload तैयार हो रहा है","🔐 DSC / EVC से Sign हो रहा है",
-              "🌐 GST Portal पर Submit हो रहा है","📧 ARN Generate हो रहा है"].map((s,i)=>(
-              <div key={i} style={{ padding:"8px 0", fontSize:13, color:C.sub,
-                borderBottom:`1px solid ${C.border}33`, display:"flex", gap:10 }}>
-                <span style={{ color:C.blue }}>→</span>{s}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {step === 4 && (
-        <div style={{ textAlign:"center", padding:"50px 0" }}>
-          <div style={{ fontSize:56, marginBottom:16 }}>✅</div>
-          <div style={{ fontSize:22, fontWeight:700, color:C.accent, marginBottom:8 }}>
-            {gstType} Filed Successfully!
-          </div>
-          <div style={{ background:C.card, border:`1px solid ${C.accent}33`,
-            borderRadius:14, padding:24, maxWidth:400, margin:"20px auto" }}>
-            <div style={{ fontSize:12, color:C.muted, marginBottom:8 }}>ARN NUMBER</div>
-            <div style={{ fontSize:18, fontFamily:"monospace", color:C.accent, letterSpacing:2 }}>
-              AA{Math.floor(Math.random()*9000+1000)}25{Math.floor(Math.random()*900+100)}
-            </div>
-            <div style={{ fontSize:12, color:C.muted, marginTop:12 }}>
-              Filed: {new Date().toLocaleDateString("en-IN")} · {period}
-            </div>
-          </div>
-          <div style={{ display:"flex", gap:12, justifyContent:"center" }}>
-            <Btn onClick={reset}>📄 Next Client</Btn>
-            <Btn variant="ghost">📥 Acknowledgement Download</Btn>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── GSTR-3B AUTO MODULE ────────────────────────────────────────
-function GSTR3BModule() {
-  const [step, setStep]   = useState(0);
-  const [form, setForm]   = useState({ client:"Sharma Traders", gstin:"07AABCS1234F1Z5", period:"March 2025" });
-  const [data, setData]   = useState(null);
-  const [loading, setLoading] = useState(false);
-  const [challanDone, setChallanDone] = useState(false);
-  const [filed, setFiled] = useState(false);
-
-  const setF = (k,v) => setForm(p=>({...p,[k]:v}));
-
-  const compute = async () => {
-    setLoading(true);
-    setStep(1);
-    try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514",
-          max_tokens:1000,
-          system:"You are an Indian GST expert. Return only pure JSON, no markdown.",
-          messages:[{ role:"user", content:`Compute GSTR-3B for ${form.client} GSTIN ${form.gstin} for ${form.period}.
-Return JSON:
-{
-  "table3_1": { "a_igst":0,"a_cgst":0,"a_sgst":0,"b_igst":0,"c_exempt":0,"d_nil":0,"e_non_gst":0 },
-  "table3_2": { "supplies_to_unregistered":0,"supplies_to_composition":0,"supplies_to_uin":0 },
-  "table4": { "itc_igst":0,"itc_cgst":0,"itc_sgst":0,"reversal_igst":0,"reversal_cgst":0,"reversal_sgst":0,"net_igst":0,"net_cgst":0,"net_sgst":0 },
-  "table5": { "igst_payable":0,"cgst_payable":0,"sgst_payable":0,"igst_itc":0,"cgst_itc":0,"sgst_itc":0,"igst_cash":0,"cgst_cash":0,"sgst_cash":0 },
-  "late_fee":0,"interest":0,"total_cash_required":0,
-  "itc_ledger_balance": {"igst":0,"cgst":0,"sgst":0},
-  "cash_ledger_balance": {"igst":0,"cgst":0,"sgst":0}
-}` }]
-        })
-      });
-      const d = await resp.json();
-      const raw = d.content?.[0]?.text||"{}";
-      setData(JSON.parse(raw.replace(/```json|```/g,"").trim()));
-    } catch {
-      setData({
-        table3_1:{ a_igst:45000,a_cgst:18000,a_sgst:18000,b_igst:0,c_exempt:0,d_nil:0,e_non_gst:0 },
-        table3_2:{ supplies_to_unregistered:67000,supplies_to_composition:0,supplies_to_uin:0 },
-        table4:{ itc_igst:38000,itc_cgst:12000,itc_sgst:12000,reversal_igst:0,reversal_cgst:0,reversal_sgst:0,net_igst:38000,net_cgst:12000,net_sgst:12000 },
-        table5:{ igst_payable:7000,cgst_payable:6000,sgst_payable:6000,igst_itc:7000,cgst_itc:6000,sgst_itc:6000,igst_cash:0,cgst_cash:0,sgst_cash:0 },
-        late_fee:0,interest:0,total_cash_required:0,
-        itc_ledger_balance:{ igst:15000,cgst:8000,sgst:8000 },
-        cash_ledger_balance:{ igst:5000,cgst:3000,sgst:3000 }
-      });
-    }
-    setLoading(false);
-    setStep(2);
-  };
-
-  const payChallan = async () => {
-    setStep(3);
-    await new Promise(r=>setTimeout(r,1800));
-    setChallanDone(true);
-    setStep(4);
-  };
-
-  const fileReturn = async () => {
-    setStep(5);
-    await new Promise(r=>setTimeout(r,2000));
-    setFiled(true);
-    setStep(6);
-  };
-
-  const reset = () => { setStep(0); setData(null); setChallanDone(false); setFiled(false); };
-
-  const Row = ({label,igst,cgst,sgst,bold}) => (
-    <tr style={{ borderBottom:`1px solid ${C.border}33`,
-      background: bold ? C.border+"44" : "transparent" }}>
-      <td style={{ padding:"9px 12px", fontSize:13, color: bold?C.text:C.sub, fontWeight:bold?700:400 }}>{label}</td>
-      {[igst,cgst,sgst].map((v,i)=>(
-        <td key={i} style={{ padding:"9px 12px", fontSize:13, fontFamily:"monospace",
-          color: bold ? C.accent : C.text, textAlign:"right" }}>
-          {v !== undefined ? "₹"+Number(v).toLocaleString("en-IN") : "—"}
-        </td>
-      ))}
-    </tr>
-  );
-
-  return (
-    <div>
-      <Stepper steps={["Setup","Compute","Review","Challan","Pay","File","Done"]} current={step} />
-
-      {step === 0 && (
-        <div style={{ maxWidth:500 }}>
-          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:16, padding:24 }}>
-            <div style={{ fontSize:14, color:C.accent, marginBottom:20, letterSpacing:1 }}>GSTR-3B AUTO COMPUTATION</div>
-            <Field label="Client Name" value={form.client} onChange={v=>setF("client",v)}
-              options={["Sharma Traders","Gupta Enterprises","Mehta & Sons","Patel Brothers"]} />
-            <Field label="GSTIN" value={form.gstin} onChange={v=>setF("gstin",v)} placeholder="07AABCS1234F1Z5" />
-            <Field label="Tax Period" value={form.period} onChange={v=>setF("period",v)}
-              options={["March 2025","February 2025","January 2025"]} />
-            <div style={{ marginTop:20, display:"flex", gap:10 }}>
-              <Btn style={{ flex:1 }} onClick={compute}>🧮 Compute GSTR-3B →</Btn>
-            </div>
-          </div>
-
-          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:14, padding:20, marginTop:16 }}>
-            <div style={{ fontSize:12, color:C.yellow, marginBottom:12 }}>⚡ Auto GSTR-3B में क्या होता है?</div>
-            {["Table 3.1 — Outward supplies automatically fill","Table 4 — ITC auto-calculate (2B से)",
-              "Table 5 — Net payable compute","Challan auto-generate (ITNS 085)",
-              "GST Portal पर direct file"].map((s,i)=>(
-              <div key={i} style={{ fontSize:13, color:C.sub, padding:"5px 0" }}>✓ {s}</div>
-            ))}
-          </div>
-        </div>
-      )}
-
-      {(step===1||step===3||step===5) && (
-        <div style={{ textAlign:"center", padding:"60px 0" }}>
-          <div style={{ fontSize:48, marginBottom:16 }}>
-            {step===1?"🧮":step===3?"💳":"🚀"}
-          </div>
-          <div style={{ fontSize:20, fontWeight:600 }}>
-            {step===1?"Computing...":step===3?"Challan Generate हो रहा है...":"Filing हो रहा है..."}
-          </div>
-        </div>
-      )}
-
-      {step === 2 && data && (
-        <div>
-          <div style={{ display:"flex", justifyContent:"space-between", alignItems:"center", marginBottom:20 }}>
-            <div>
-              <div style={{ fontSize:16, fontWeight:700 }}>GSTR-3B — {form.client} · {form.period}</div>
-              <div style={{ fontSize:12, color:C.sub }}>GSTIN: {form.gstin}</div>
-            </div>
-            <div style={{ display:"flex", gap:10 }}>
-              <Btn variant="ghost" onClick={reset}>↩ Back</Btn>
-              <Btn variant="orange" onClick={payChallan}>💳 Pay & File →</Btn>
-            </div>
-          </div>
-
-          {/* Table 3.1 */}
-          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:14, padding:20, marginBottom:16 }}>
-            <div style={{ fontSize:13, color:C.accent, marginBottom:12, letterSpacing:1 }}>TABLE 3.1 — OUTWARD SUPPLIES</div>
-            <table style={{ width:"100%", borderCollapse:"collapse" }}>
-              <thead>
-                <tr style={{ borderBottom:`1px solid ${C.border}` }}>
-                  {["Nature","IGST","CGST","SGST"].map(h=>(
-                    <th key={h} style={{ padding:"8px 12px", textAlign: h==="Nature"?"left":"right",
-                      fontSize:11, color:C.muted, fontFamily:"monospace", fontWeight:400 }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                <Row label="(a) Outward Taxable Supplies" igst={data.table3_1.a_igst} cgst={data.table3_1.a_cgst} sgst={data.table3_1.a_sgst} />
-                <Row label="(b) Outward Taxable (Zero Rated)" igst={data.table3_1.b_igst} cgst={0} sgst={0} />
-                <Row label="(c) Other Exempt Supplies" igst={data.table3_1.c_exempt} />
-                <Row label="TOTAL TAX" igst={data.table3_1.a_igst+data.table3_1.b_igst}
-                  cgst={data.table3_1.a_cgst} sgst={data.table3_1.a_sgst} bold />
-              </tbody>
-            </table>
-          </div>
-
-          {/* Table 4 — ITC */}
-          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:14, padding:20, marginBottom:16 }}>
-            <div style={{ fontSize:13, color:C.accent, marginBottom:12, letterSpacing:1 }}>TABLE 4 — ITC AVAILABLE</div>
-            <table style={{ width:"100%", borderCollapse:"collapse" }}>
-              <thead>
-                <tr style={{ borderBottom:`1px solid ${C.border}` }}>
-                  {["Details","IGST","CGST","SGST"].map(h=>(
-                    <th key={h} style={{ padding:"8px 12px", textAlign:h==="Details"?"left":"right",
-                      fontSize:11, color:C.muted, fontFamily:"monospace", fontWeight:400 }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                <Row label="ITC Available (as per 2B)" igst={data.table4.itc_igst} cgst={data.table4.itc_cgst} sgst={data.table4.itc_sgst} />
-                <Row label="ITC Reversal" igst={data.table4.reversal_igst} cgst={data.table4.reversal_cgst} sgst={data.table4.reversal_sgst} />
-                <Row label="NET ITC" igst={data.table4.net_igst} cgst={data.table4.net_cgst} sgst={data.table4.net_sgst} bold />
-              </tbody>
-            </table>
-          </div>
-
-          {/* Table 5 — Payment */}
-          <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:14, padding:20 }}>
-            <div style={{ fontSize:13, color:C.accent, marginBottom:12, letterSpacing:1 }}>TABLE 5 — PAYMENT OF TAX</div>
-            <table style={{ width:"100%", borderCollapse:"collapse" }}>
-              <tbody>
-                <Row label="Tax Payable" igst={data.table5.igst_payable} cgst={data.table5.cgst_payable} sgst={data.table5.sgst_payable} />
-                <Row label="Paid via ITC" igst={data.table5.igst_itc} cgst={data.table5.cgst_itc} sgst={data.table5.sgst_itc} />
-                <Row label="Paid via Cash" igst={data.table5.igst_cash} cgst={data.table5.cgst_cash} sgst={data.table5.sgst_cash} bold />
-              </tbody>
-            </table>
-            {data.total_cash_required > 0 && (
-              <div style={{ background:`${C.orange}11`, border:`1px solid ${C.orange}33`,
-                borderRadius:8, padding:12, marginTop:12 }}>
-                <span style={{ color:C.orange, fontSize:13 }}>
-                  ⚠ Cash Ledger में ₹{data.total_cash_required.toLocaleString("en-IN")} और चाहिए
-                </span>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-
-      {step === 4 && (
-        <div style={{ textAlign:"center", padding:"50px 0" }}>
-          <div style={{ fontSize:48, marginBottom:16 }}>💳</div>
-          <div style={{ fontSize:20, fontWeight:600, color:C.yellow, marginBottom:8 }}>Challan Ready!</div>
-          <div style={{ background:C.card, border:`1px solid ${C.yellow}33`, borderRadius:14, padding:24, maxWidth:380, margin:"16px auto" }}>
-            <div style={{ fontSize:12, color:C.muted, marginBottom:4 }}>CHALLAN REFERENCE</div>
-            <div style={{ fontSize:20, fontFamily:"monospace", color:C.yellow }}>
-              CHL{Date.now().toString().slice(-8)}
-            </div>
-            <div style={{ marginTop:12, fontSize:13, color:C.sub }}>
-              Amount: ₹{(data?.total_cash_required||0).toLocaleString("en-IN")}
-            </div>
-          </div>
-          <div style={{ display:"flex", gap:12, justifyContent:"center" }}>
-            <Btn onClick={fileReturn}>🚀 File GSTR-3B →</Btn>
-            <Btn variant="ghost">💳 Pay via Net Banking</Btn>
-          </div>
-        </div>
-      )}
-
-      {step === 6 && (
-        <div style={{ textAlign:"center", padding:"50px 0" }}>
-          <div style={{ fontSize:56, marginBottom:16 }}>🎊</div>
-          <div style={{ fontSize:22, fontWeight:700, color:C.accent }}>GSTR-3B Filed Successfully!</div>
-          <div style={{ background:C.card, border:`1px solid ${C.accent}33`, borderRadius:14,
-            padding:24, maxWidth:380, margin:"20px auto" }}>
-            <div style={{ fontSize:11, color:C.muted, marginBottom:4 }}>ARN NUMBER</div>
-            <div style={{ fontSize:18, fontFamily:"monospace", color:C.accent, letterSpacing:2 }}>
-              AA3B25{Math.floor(Math.random()*9000+1000)}
-            </div>
-            <div style={{ fontSize:12, color:C.muted, marginTop:10 }}>
-              {form.client} · {form.period}
-            </div>
-          </div>
-          <Btn onClick={reset}>📋 Next Client →</Btn>
-        </div>
-      )}
-    </div>
-  );
-}
-
-// ── AI ASSISTANT ───────────────────────────────────────────────
-function AIModule() {
-  const [msgs, setMsgs]     = useState([{ role:"assistant", text:"नमस्ते! मैं आपका CA AI Assistant हूँ। Tally entry, GST filing, TDS — कुछ भी पूछें। 🙏" }]);
-  const [input, setInput]   = useState("");
-  const [loading, setLoading] = useState(false);
-
-  const send = async () => {
-    if (!input.trim()||loading) return;
-    const q = input.trim(); setInput("");
-    setMsgs(p=>[...p,{ role:"user", text:q }]);
-    setLoading(true);
-    try {
-      const resp = await fetch("https://api.anthropic.com/v1/messages", {
-        method:"POST",
-        headers:{ "Content-Type":"application/json" },
-        body: JSON.stringify({
-          model:"claude-sonnet-4-20250514", max_tokens:1000,
-          system:`You are an expert Indian CA assistant. Help with GST, TDS, Tally, accounting, income tax.
-Answer in same language as user (Hindi/English). Be concise and practical.`,
-          messages: msgs.filter((_,i)=>i>0).map(m=>({ role:m.role, content:m.text }))
-                        .concat([{ role:"user", content:q }])
-        })
-      });
-      const d = await resp.json();
-      setMsgs(p=>[...p,{ role:"assistant", text:d.content?.[0]?.text||"Error" }]);
-    } catch {
-      setMsgs(p=>[...p,{ role:"assistant", text:"Network error. Please retry." }]);
-    }
-    setLoading(false);
-  };
-
-  return (
-    <div style={{ display:"flex", flexDirection:"column", height:"calc(100vh - 150px)" }}>
-      <div style={{ display:"flex", gap:8, flexWrap:"wrap", marginBottom:16 }}>
-        {["Tally में purchase entry कैसे करें?","GSTR-3B की due date क्या है?",
-          "ITC reversal कब होता है?","TDS 194C rate बताओ","Late fee कैसे calculate करें?"].map(q=>(
-          <button key={q} onClick={()=>setInput(q)}
-            style={{ background:C.card, border:`1px solid ${C.border}`, color:C.sub,
-              padding:"6px 14px", borderRadius:20, fontSize:12, cursor:"pointer", fontFamily:"inherit" }}>{q}</button>
-        ))}
-      </div>
-
-      <div style={{ flex:1, background:C.card, border:`1px solid ${C.border}`, borderRadius:14,
-        padding:20, overflowY:"auto", display:"flex", flexDirection:"column", gap:14, marginBottom:14 }}>
-        {msgs.map((m,i)=>(
-          <div key={i} style={{
-            alignSelf: m.role==="user" ? "flex-end" : "flex-start",
-            maxWidth:"80%",
-            background: m.role==="user" ? `${C.accent}18` : C.surface,
-            border: `1px solid ${m.role==="user" ? C.accent+"33" : C.border}`,
-            borderRadius: m.role==="user" ? "14px 14px 2px 14px" : "14px 14px 14px 2px",
-            padding:"12px 16px"
-          }}>
-            {m.role==="assistant" && <div style={{ fontSize:10, color:C.accent, marginBottom:5, fontFamily:"monospace" }}>✦ CA ASSISTANT</div>}
-            <div style={{ fontSize:14, lineHeight:1.7, whiteSpace:"pre-wrap", color:C.text }}>{m.text}</div>
-          </div>
-        ))}
-        {loading && (
-          <div style={{ alignSelf:"flex-start", background:C.surface, border:`1px solid ${C.border}`,
-            borderRadius:"14px 14px 14px 2px", padding:"12px 16px" }}>
-            <span style={{ fontSize:13, color:C.muted, fontFamily:"monospace" }}>सोच रहा हूँ...</span>
-          </div>
-        )}
-      </div>
-
-      <div style={{ display:"flex", gap:12 }}>
-        <input value={input} onChange={e=>setInput(e.target.value)}
-          onKeyDown={e=>e.key==="Enter"&&send()}
-          placeholder="GST, Tally, TDS, Accounting — कुछ भी पूछें..."
-          style={{ flex:1, background:C.card, border:`1px solid ${C.border}`, color:C.text,
-            borderRadius:10, padding:"12px 16px", fontFamily:"inherit", fontSize:14 }} />
-        <Btn onClick={send} disabled={loading}>{loading?"...":"Send ➤"}</Btn>
-      </div>
-    </div>
-  );
-}
-
-// ── MAIN APP ───────────────────────────────────────────────────
-export default function CAOfficePro() {
-  const [active, setActive] = useState("dashboard");
-  const [sideOpen, setSideOpen] = useState(true);
-  const [notif, setNotif]   = useState(null);
-
-  const showNotif = (msg) => { setNotif(msg); setTimeout(()=>setNotif(null),3000); };
-
-  const STATS = [
-    { label:"Pending Filings",  value:"8",      sub:"Due this month",   color:C.orange },
-    { label:"Tally Entries",    value:"124",     sub:"Auto-posted today", color:C.accent },
-    { label:"GST Filed",        value:"12",      sub:"This month",       color:C.blue   },
-    { label:"Tax Saved via ITC",value:"₹2.4L",  sub:"March 2025",       color:C.yellow },
-  ];
-
-  const renderContent = () => {
-    switch(active) {
-      case "tally":    return <TallyModule />;
-      case "gst_auto": return <AutoGSTModule />;
-      case "gst3b":    return <GSTR3BModule />;
-      case "ai":       return <AIModule />;
-      case "dashboard":
-        return (
-          <div>
-            <div style={{ display:"grid", gridTemplateColumns:"repeat(4,1fr)", gap:16, marginBottom:24 }}>
-              {STATS.map((s,i)=>(
-                <div key={i} style={{ background:C.card, border:`1px solid ${s.color}22`,
-                  borderRadius:14, padding:20 }}>
-                  <div style={{ fontSize:28, fontWeight:300, color:s.color }}>{s.value}</div>
-                  <div style={{ fontSize:13, color:C.sub, marginTop:4 }}>{s.label}</div>
-                  <div style={{ fontSize:11, color:C.muted, fontFamily:"monospace", marginTop:6 }}>{s.sub}</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Feature highlights */}
-            <div style={{ display:"grid", gridTemplateColumns:"1fr 1fr 1fr", gap:16 }}>
-              {[
-                { id:"tally",    ico:"📄", title:"Tally AI Entry",    desc:"PDF/Image से automatic Tally voucher entry", color:C.accent },
-                { id:"gst_auto", ico:"🚀", title:"Auto GST Filing",   desc:"Client select करो — AI सब file कर देगा",   color:C.blue   },
-                { id:"gst3b",    ico:"🧮", title:"GSTR-3B Auto",      desc:"Table 3.1, 4, 5 auto compute + challan",    color:C.orange },
-              ].map(f=>(
-                <div key={f.id} onClick={()=>setActive(f.id)}
-                  style={{ background:C.card, border:`1px solid ${f.color}33`, borderRadius:16,
-                    padding:24, cursor:"pointer", transition:"all .2s" }}
-                  onMouseEnter={e=>e.currentTarget.style.transform="translateY(-3px)"}
-                  onMouseLeave={e=>e.currentTarget.style.transform="translateY(0)"}>
-                  <div style={{ fontSize:36, marginBottom:12 }}>{f.ico}</div>
-                  <div style={{ fontSize:16, fontWeight:700, color:f.color, marginBottom:6 }}>{f.title}</div>
-                  <div style={{ fontSize:13, color:C.sub, lineHeight:1.6 }}>{f.desc}</div>
-                  <div style={{ marginTop:16, fontSize:12, color:f.color }}>Click to open →</div>
-                </div>
-              ))}
-            </div>
-
-            {/* Pending work */}
-            <div style={{ background:C.card, border:`1px solid ${C.border}`, borderRadius:14, padding:20, marginTop:20 }}>
-              <div style={{ fontSize:13, color:C.accent, marginBottom:14, letterSpacing:1 }}>PENDING WORK — TODAY</div>
-              {[
-                ["Sharma Traders","GSTR-3B","Mar 2025","20 Apr",C.orange],
-                ["Patel Brothers","Tally Entry","Apr 2025","—",C.blue],
-                ["Mehta & Sons","GSTR-1","Mar 2025","11 Apr",C.red],
-                ["Gupta Enterprises","TDS Return","Q4 FY25","30 Apr",C.yellow],
-              ].map(([c,t,p,d,col],i)=>(
-                <div key={i} style={{ display:"flex", justifyContent:"space-between",
-                  alignItems:"center", padding:"10px 0", borderBottom:`1px solid ${C.border}33` }}>
-                  <div>
-                    <div style={{ fontSize:14 }}>{c}</div>
-                    <div style={{ fontSize:11, color:C.muted, fontFamily:"monospace" }}>{t} · {p}</div>
-                  </div>
-                  <div style={{ display:"flex", gap:10, alignItems:"center" }}>
-                    <span style={{ fontSize:12, color:col }}>Due {d}</span>
-                    <Btn variant="ghost" style={{ padding:"4px 12px", fontSize:11 }}
-                      onClick={()=>showNotif(`${t} → ${c} opening...`)}>Open</Btn>
-                  </div>
-                </div>
-              ))}
-            </div>
-          </div>
-        );
-
-      default:
-        return (
-          <div style={{ textAlign:"center", padding:"80px 0", color:C.muted }}>
-            <div style={{ fontSize:48, marginBottom:16 }}>🚧</div>
-            <div style={{ fontSize:18 }}>Coming Soon — जल्द आएगा!</div>
-          </div>
-        );
-    }
-  };
-
-  return (
-    <div style={{ fontFamily:"'DM Sans',system-ui,sans-serif", background:C.bg,
-      minHeight:"100vh", color:C.text, display:"flex", overflow:"hidden" }}>
-      <style>{`
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CA Office Pro – AI Powered</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
         @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
-        *{box-sizing:border-box;margin:0;padding:0}
-        ::-webkit-scrollbar{width:4px}::-webkit-scrollbar-track{background:${C.bg}}
-        ::-webkit-scrollbar-thumb{background:${C.border};border-radius:2px}
-        input,select{outline:none}
-        button{font-family:'DM Sans',system-ui,sans-serif}
-      `}</style>
+        
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body { font-family: 'DM Sans', sans-serif; background-color: #07090f; color: #dce6f5; overflow-x: hidden; }
+        
+        /* Webkit Scrollbar Token Styles */
+        ::-webkit-scrollbar { width: 4px; }
+        ::-webkit-scrollbar-track { background: #07090f; }
+        ::-webkit-scrollbar-thumb { background: #1e2840; border-radius: 2px; }
+        
+        input, select { outline: none; }
+        .font-mono-custom { font-family: 'JetBrains Mono', monospace; }
+        
+        @keyframes spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
+        @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+        .animate-spin-custom { animation: spin 2s linear infinite; }
+        .animate-pulse-custom { animation: pulse 1.5s infinite; }
+    </style>
+</head>
+<body class="min-h-screen flex">
 
-      {notif && (
-        <div style={{ position:"fixed", top:20, right:20, zIndex:9999,
-          background:C.card, border:`1px solid ${C.accent}44`, borderRadius:10,
-          padding:"12px 20px", fontSize:13, color:C.accent,
-          animation:"slideIn .3s ease", boxShadow:"0 8px 32px #0008" }}>
-          ✅ {notif}
-          <style>{`@keyframes slideIn{from{transform:translateX(80px);opacity:0}to{transform:translateX(0);opacity:1}}`}</style>
-        </div>
-      )}
-
-      {/* Sidebar */}
-      <div style={{ width:sideOpen?230:64, background:C.surface, borderRight:`1px solid ${C.border}`,
-        transition:"width .3s", flexShrink:0, display:"flex", flexDirection:"column" }}>
-        <div style={{ padding:"20px 16px", borderBottom:`1px solid ${C.border}`,
-          display:"flex", alignItems:"center", gap:10 }}>
-          <div style={{ width:36, height:36, background:`linear-gradient(135deg,${C.accent},#00b894)`,
-            borderRadius:10, display:"flex", alignItems:"center", justifyContent:"center",
-            fontSize:18, flexShrink:0 }}>⬡</div>
-          {sideOpen && (
-            <div>
-              <div style={{ fontSize:13, fontWeight:700, color:C.accent, letterSpacing:1 }}>CA OFFICE</div>
-              <div style={{ fontSize:9, color:C.muted, fontFamily:"monospace", letterSpacing:2 }}>PRO · AI POWERED</div>
-            </div>
-          )}
-        </div>
-
-        <div style={{ flex:1, overflowY:"auto", padding:"8px 0" }}>
-          {NAV.map(n=>(
-            <div key={n.id} onClick={()=>setActive(n.id)}
-              style={{ padding:"11px 16px", display:"flex", alignItems:"center", gap:12, cursor:"pointer",
-                borderLeft:`2px solid ${active===n.id ? C.accent : "transparent"}`,
-                background: active===n.id ? `${C.accent}12` : "transparent",
-                transition:"all .2s" }}>
-              <span style={{ fontSize:17, color:active===n.id?C.accent:C.muted, flexShrink:0 }}>{n.icon}</span>
-              {sideOpen && (
-                <div>
-                  <div style={{ fontSize:13, color:active===n.id?C.text:C.sub }}>{n.label}</div>
-                  <div style={{ fontSize:10, color:C.muted, fontFamily:"monospace" }}>{n.hi}</div>
-                </div>
-              )}
-              {/* NEW badge for new features */}
-              {sideOpen && ["tally","gst_auto","gst3b"].includes(n.id) && (
-                <span style={{ marginLeft:"auto", fontSize:9, background:C.orange,
-                  color:"#fff", padding:"2px 6px", borderRadius:10, fontWeight:700 }}>NEW</span>
-              )}
-            </div>
-          ))}
-        </div>
-
-        <div style={{ padding:12, borderTop:`1px solid ${C.border}` }}>
-          <div style={{ fontSize:9, color:C.muted, textAlign:"center", fontFamily:"monospace" }}>
-            {sideOpen ? "FY 2025-26 · GST + Tally AI" : "FY26"}
-          </div>
-        </div>
-      </div>
-
-      {/* Main */}
-      <div style={{ flex:1, display:"flex", flexDirection:"column", overflow:"hidden" }}>
-        {/* Top bar */}
-        <div style={{ background:C.surface, borderBottom:`1px solid ${C.border}`,
-          padding:"12px 24px", display:"flex", alignItems:"center", justifyContent:"space-between" }}>
-          <div style={{ display:"flex", alignItems:"center", gap:14 }}>
-            <button onClick={()=>setSideOpen(!sideOpen)}
-              style={{ background:C.card, border:`1px solid ${C.border}`, color:C.sub,
-                padding:"6px 10px", borderRadius:8, cursor:"pointer", fontSize:16 }}>☰</button>
-            <div>
-              <div style={{ fontSize:17, fontWeight:600 }}>
-                {NAV.find(n=>n.id===active)?.label}
-              </div>
-              <div style={{ fontSize:11, color:C.muted, fontFamily:"monospace" }}>
-                {NAV.find(n=>n.id===active)?.hi}
-              </div>
-            </div>
-          </div>
-          <div style={{ display:"flex", alignItems:"center", gap:12 }}>
-            <div style={{ fontSize:12, color:C.muted, fontFamily:"monospace" }}>April 2026</div>
-            <div style={{ width:34, height:34, background:`${C.accent}22`,
-              border:`1px solid ${C.accent}44`, borderRadius:"50%",
-              display:"flex", alignItems:"center", justifyContent:"center",
-              fontSize:13, color:C.accent, fontWeight:700 }}>CA</div>
-          </div>
-        </div>
-
-        <div style={{ flex:1, overflowY:"auto", padding:24 }}>
-          {renderContent()}
-        </div>
-      </div>
+    <div id="notif-toast" class="hidden fixed top-5 right-5 z-50 bg-[#131825] border border-[#00e5b0]/40 rounded-xl px-5 py-3 text-sm text-[#00e5b0] shadow-2xl transition-all duration-300">
+        ✅ <span id="notif-msg">System Action</span>
     </div>
-  );
-}
+
+    <div id="sidebar" class="w-[230px] bg-[#0e1219] border-r border-[#1e2840] transition-all duration-300 flex flex-col shrink-0">
+        <div class="p-5 border-b border-[#1e2840] flex items-center gap-3">
+            <div class="w-9 h-9 bg-gradient-to-br from-[#00e5b0] to-[#00b894] rounded-lg flex items-center justify-center text-lg text-[#07090f] font-bold shrink-0">⬡</div>
+            <div id="brand-meta">
+                <div class="text-xs font-bold text-[#00e5b0] tracking-wider uppercase">CA OFFICE</div>
+                <div class="text-[9px] text-[#4a5878] font-mono-custom tracking-widest">PRO · AI POWERED</div>
+            </div>
+        </div>
+
+        <div class="flex-1 overflow-y-auto py-2 space-y-1">
+            <div onclick="switchTab('dashboard')" id="nav-dashboard" class="nav-item p-3 px-4 flex items-center gap-3 cursor-pointer border-l-2 border-[#00e5b0] bg-[#00e5b0]/10 transition-all">
+                <span class="text-lg text-[#00e5b0]">⬡</span>
+                <div>
+                    <div class="text-xs font-medium text-white">Dashboard</div>
+                    <div class="text-[10px] text-[#4a5878] font-mono-custom">डैशबोर्ड</div>
+                </div>
+            </div>
+            <div onclick="switchTab('tally')" id="nav-tally" class="nav-item p-3 px-4 flex items-center gap-3 cursor-pointer border-l-2 border-transparent hover:bg-gray-800/20 transition-all">
+                <span class="text-lg text-[#4a5878]">⬢</span>
+                <div class="flex-1 flex items-center justify-between">
+                    <div>
+                        <div class="text-xs font-medium text-[#8899b0]">Tally AI Entry</div>
+                        <div class="text-[10px] text-[#4a5878] font-mono-custom">टैली ऑटो एंट्री</div>
+                    </div>
+                    <span class="text-[9px] bg-[#ff7043] text-white px-1.5 py-0.5 rounded-full font-bold badge-token">NEW</span>
+                </div>
+            </div>
+            <div onclick="switchTab('gst_auto')" id="nav-gst_auto" class="nav-item p-3 px-4 flex items-center gap-3 cursor-pointer border-l-2 border-transparent hover:bg-gray-800/20 transition-all">
+                <span class="text-lg text-[#4a5878]">◈</span>
+                <div class="flex-1 flex items-center justify-between">
+                    <div>
+                        <div class="text-xs font-medium text-[#8899b0]">Auto GST Filing</div>
+                        <div class="text-[10px] text-[#4a5878] font-mono-custom">ऑटो GST फाइलिंग</div>
+                    </div>
+                    <span class="text-[9px] bg-[#ff7043] text-white px-1.5 py-0.5 rounded-full font-bold badge-token">NEW</span>
+                </div>
+            </div>
+            <div onclick="switchTab('gst3b')" id="nav-gst3b" class="nav-item p-3 px-4 flex items-center gap-3 cursor-pointer border-l-2 border-transparent hover:bg-gray-800/20 transition-all">
+                <span class="text-lg text-[#4a5878]">◉</span>
+                <div class="flex-1 flex items-center justify-between">
+                    <div>
+                        <div class="text-xs font-medium text-[#8899b0]">GSTR-3B Auto</div>
+                        <div class="text-[10px] text-[#4a5878] font-mono-custom">3B ऑटो फाइलिंग</div>
+                    </div>
+                    <span class="text-[9px] bg-[#ff7043] text-white px-1.5 py-0.5 rounded-full font-bold badge-token">NEW</span>
+                </div>
+            </div>
+            <div onclick="switchTab('ai')" id="nav-ai" class="nav-item p-3 px-4 flex items-center gap-3 cursor-pointer border-l-2 border-transparent hover:bg-gray-800/20 transition-all">
+                <span class="text-lg text-[#4a5878]">✦</span>
+                <div>
+                    <div class="text-xs font-medium text-[#8899b0]">AI Assistant</div>
+                    <div class="text-[10px] text-[#4a5878] font-mono-custom">AI सहायक</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="p-3 border-t border-[#1e2840] text-center text-[9px] text-[#4a5878] font-mono-custom">
+            <span id="footer-text">FY 2025-26 · GST + Tally AI</span>
+        </div>
+    </div>
+
+    <div class="flex-1 flex flex-col overflow-hidden">
+        
+        <div class="bg-[#0e1219] border-b border-[#1e2840] p-3.5 px-6 flex justify-between items-center">
+            <div class="flex items-center gap-4">
+                <button onclick="toggleSidebar()" class="bg-[#131825] border border-[#1e2840] text-[#8899b0] p-1.5 px-2.5 rounded-lg text-sm hover:text-white">☰</button>
+                <div>
+                    <h2 id="top-title" class="text-sm font-semibold text-white">Dashboard</h2>
+                    <p id="top-subtitle" class="text-[10px] text-[#4a5878] font-mono-custom">डैशबोर्ड</p>
+                </div>
+            </div>
+            <div class="flex items-center gap-3">
+                <div class="text-xs text-[#4a5878] font-mono-custom">April 2026</div>
+                <div class="w-8 h-8 bg-[#00e5b0]/10 border border-[#00e5b0]/30 rounded-full flex items-center justify-center text-xs text-[#00e5b0] font-bold">CA</div>
+            </div>
+        </div>
+
+        <div class="flex-1 overflow-y-auto p-6 bg-[#07090f]">
+            
+            <div id="pane-dashboard" class="tab-pane block space-y-6">
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                    <div class="bg-[#131825] border border-[#ff7043]/20 rounded-xl p-5">
+                        <div class="text-2xl font-light text-[#ff7043]">8</div>
+                        <div class="text-xs text-[#8899b0] mt-1">Pending Filings</div>
+                        <div class="text-[11px] text-[#4a5878] font-mono-custom mt-1">Due this month</div>
+                    </div>
+                    <div class="bg-[#131825] border border-[#00e5b0]/20 rounded-xl p-5">
+                        <div class="text-2xl font-light text-[#00e5b0]">124</div>
+                        <div class="text-xs text-[#8899b0] mt-1">Tally Entries</div>
+                        <div class="text-[11px] text-[#4a5878] font-mono-custom mt-1">Auto-posted today</div>
+                    </div>
+                    <div class="bg-[#131825] border border-[#3d8bff]/20 rounded-xl p-5">
+                        <div class="text-2xl font-light text-[#3d8bff]">12</div>
+                        <div class="text-xs text-[#8899b0] mt-1">GST Filed</div>
+                        <div class="text-[11px] text-[#4a5878] font-mono-custom mt-1">This month</div>
+                    </div>
+                    <div class="bg-[#131825] border border-[#ffd740]/20 rounded-xl p-5">
+                        <div class="text-2xl font-light text-[#ffd740]">₹2.4L</div>
+                        <div class="text-xs text-[#8899b0] mt-1">Tax Saved via ITC</div>
+                        <div class="text-[11px] text-[#4a5878] font-mono-custom mt-1">March 2025</div>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div onclick="switchTab('tally')" class="bg-[#131825] border border-[#00e5b0]/20 rounded-xl p-6 cursor-pointer hover:-translate-y-1 transition-all duration-300">
+                        <div class="text-3xl mb-3">📄</div>
+                        <h4 class="text-sm font-bold text-[#00e5b0] mb-1">Tally AI Entry</h4>
+                        <p class="text-xs text-[#8899b0] leading-relaxed">PDF/Image से automatic Tally voucher entry</p>
+                        <div class="text-[11px] text-[#00e5b0] mt-4">Click to open →</div>
+                    </div>
+                    <div onclick="switchTab('gst_auto')" class="bg-[#131825] border border-[#3d8bff]/20 rounded-xl p-6 cursor-pointer hover:-translate-y-1 transition-all duration-300">
+                        <div class="text-3xl mb-3">🚀</div>
+                        <h4 class="text-sm font-bold text-[#3d8bff] mb-1">Auto GST Filing</h4>
+                        <p class="text-xs text-[#8899b0] leading-relaxed">Client select करो — AI सब file कर देगा</p>
+                        <div class="text-[11px] text-[#3d8bff] mt-4">Click to open →</div>
+                    </div>
+                    <div onclick="switchTab('gst3b')" class="bg-[#131825] border border-[#ff7043]/20 rounded-xl p-6 cursor-pointer hover:-translate-y-1 transition-all duration-300">
+                        <div class="text-3xl mb-3">🧮</div>
+                        <h4 class="text-sm font-bold text-[#ff7043] mb-1">GSTR-3B Auto</h4>
+                        <p class="text-xs text-[#8899b0] leading-relaxed">Table 3.1, 4, 5 auto compute + challan</p>
+                        <div class="text-[11px] text-[#ff7043] mt-4">Click to open →</div>
+                    </div>
+                </div>
+
+                <div class="bg-[#131825] border border-[#1e2840] rounded-xl p-5">
+                    <h3 class="text-xs text-[#00e5b0] tracking-wider uppercase mb-3">PENDING WORK — TODAY</h3>
+                    <div class="divide-y divide-[#1e2840]/20 space-y-1">
+                        <div class="flex justify-between items-center py-2.5">
+                            <div><div class="text-xs text-white font-medium">Sharma Traders</div><div class="text-[11px] text-[#4a5878] font-mono-custom">GSTR-3B · Mar 2025</div></div>
+                            <div class="flex items-center gap-3"><span class="text-xs text-[#ff7043]">Due 20 Apr</span><button onclick="triggerToast('GSTR-3B → Sharma Traders opening...')" class="bg-[#131825] border border-[#1e2840] text-[#8899b0] text-[11px] px-3 py-1 rounded hover:text-white">Open</button></div>
+                        </div>
+                        <div class="flex justify-between items-center py-2.5">
+                            <div><div class="text-xs text-white font-medium">Patel Brothers</div><div class="text-[11px] text-[#4a5878] font-mono-custom">Tally Entry · Apr 2025</div></div>
+                            <div class="flex items-center gap-3"><span class="text-xs text-[#3d8bff]">Due —</span><button onclick="triggerToast('Tally Entry → Patel Brothers opening...')" class="bg-[#131825] border border-[#1e2840] text-[#8899b0] text-[11px] px-3 py-1 rounded hover:text-white">Open</button></div>
+                        </div>
+                        <div class="flex justify-between items-center py-2.5">
+                            <div><div class="text-xs text-white font-medium">Mehta & Sons</div><div class="text-[11px] text-[#4a5878] font-mono-custom">GSTR-1 · Mar 2025</div></div>
+                            <div class="flex items-center gap-3"><span class="text-xs text-[#ff4d6a]">Due 11 Apr</span><button onclick="triggerToast('GSTR-1 → Mehta & Sons opening...')" class="bg-[#131825] border border-[#1e2840] text-[#8899b0] text-[11px] px-3 py-1 rounded hover:text-white">Open</button></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div id="pane-tally" class="tab-pane hidden space-y-5">
+                <div class="flex items-center gap-0 mb-6" id="tally-stepper-container"></div>
+
+                <div id="tally-view-0" class="tally-sub-view grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div onclick="document.getElementById('tally-file-picker').click()" class="bg-[#131825] border-2 border-dashed border-[#1e2840] hover:border-[#00e5b0] rounded-xl p-8 text-center cursor-pointer transition">
+                        <input type="file" id="tally-file-picker" multiple accept="image/*, .pdf" class="hidden" onchange="tallyFileSelected(event)">
+                        <div class="text-4xl mb-2">📄</div>
+                        <div class="text-sm font-semibold mb-1">Bills / Invoices Upload करें</div>
+                        <p class="text-xs text-[#8899b0] mb-4">Photo, Scan, PDF — सब चलेगा</p>
+                        <button class="bg-[#131825] border border-[#1e2840] text-[#8899b0] text-xs px-4 py-2 rounded-lg">📁 Files Choose करें</button>
+                        <div id="tally-upload-feedback" class="hidden mt-4 text-xs text-[#00e5b0] font-medium"></div>
+                    </div>
+                    <div class="bg-[#131825] border border-[#1e2840] rounded-xl p-6 space-y-4 flex flex-col justify-between">
+                        <div class="space-y-3">
+                            <div class="text-xs text-[#00e5b0] tracking-wider uppercase">क्या-क्या upload कर सकते हैं?</div>
+                            <div class="space-y-2 text-xs divide-y divide-[#1e2840]/30">
+                                <div class="pt-2 flex justify-between"><span>📷 Mobile से ली bill की photo</span><span class="text-[#4a5878] font-mono-custom">JPG / PNG</span></div>
+                                <div class="pt-2 flex justify-between"><span>📄 Scanned invoice PDF</span><span class="text-[#4a5878] font-mono-custom">PDF</span></div>
+                                <div class="pt-2 flex justify-between"><span>🧾 E-invoice / GST bill</span><span class="text-[#4a5878] font-mono-custom">PDF / Image</span></div>
+                            </div>
+                        </div>
+                        <button onclick="runTallyExtractionAnimation()" id="tally-action-btn" disabled class="w-full py-3 bg-gray-800 text-gray-500 opacity-40 rounded-xl font-bold text-sm cursor-not-allowed transition duration-200">🤖 AI से Data Extract करें →</button>
+                    </div>
+                </div>
+
+                <div id="tally-view-1" class="tally-sub-view hidden text-center py-12 space-y-3">
+                    <div class="text-4xl animate-spin-custom inline-block">⚙️</div>
+                    <h3 class="text-base font-bold">AI Data Extract कर रहा है...</h3>
+                    <p class="text-xs text-[#8899b0]">OCR Document scanning & mapping into structured accounting records...</p>
+                </div>
+
+                <div id="tally-view-2" class="tally-sub-view hidden space-y-4">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <h3 class="text-sm font-bold text-white">✅ Entries Extracted Structural Mapping</h3>
+                            <p class="text-xs text-[#8899b0]">Review करें, edit करें, फिर Tally में push करें</p>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="resetTallyPipeline()" class="bg-[#131825] border border-[#1e2840] text-[#8899b0] text-xs px-3 py-2 rounded-lg">↩ Reset</button>
+                            <button onclick="commitTallyGatewayPush()" class="bg-gradient-to-r from-[#ff7043] to-[#e64a19] text-white text-xs font-bold px-4 py-2 rounded-lg shadow-lg">⬢ Tally में Push करें →</button>
+                        </div>
+                    </div>
+                    <div id="tally-sheet-records" class="space-y-3"></div>
+                </div>
+
+                <div id="tally-view-3" class="tally-sub-view hidden text-center py-12 space-y-2">
+                    <div class="text-4xl text-[#ff7043] animate-pulse-custom">⬢</div>
+                    <h3 class="text-base font-bold">Tally Prime में Data Push हो रहा है...</h3>
+                    <p class="text-xs text-[#8899b0]">XML Voucher format rendering and dispatching to localhost:9000 server instance...</p>
+                </div>
+
+                <div id="tally-view-4" class="tally-sub-view hidden text-center py-12 space-y-4">
+                    <div class="text-5xl">🎉</div>
+                    <h3 class="text-lg font-bold text-[#00e5b0]">Tally Entry Complete!</h3>
+                    <p class="text-xs text-[#8899b0] max-w-xs mx-auto">Voucher structural components generated and balanced inside Tally Company database ledger.</p>
+                    <button onclick="resetTallyPipeline()" class="mt-2 bg-gradient-to-r from-[#00e5b0] to-[#00b894] text-[#07090f] text-xs font-bold px-4 py-2 rounded-lg">📄 और Bills Upload करें</button>
+                </div>
+            </div>
+
+            <div id="pane-gst_auto" class="tab-pane hidden space-y-5">
+                <div class="flex items-center gap-0 mb-6" id="gst-stepper-container"></div>
+
+                <div id="gst-view-0" class="gst-sub-view grid grid-cols-1 md:grid-cols-2 gap-5">
+                    <div class="bg-[#131825] border border-[#1e2840] rounded-xl p-5 space-y-4">
+                        <div class="text-xs text-[#00e5b0] tracking-wider uppercase">GST FILING ENVIRONMENT SETUP</div>
+                        <div>
+                            <label class="block text-[10px] text-[#4a5878] font-mono-custom uppercase mb-1">Select Profile Client</label>
+                            <select id="gst-client-selector" class="w-full bg-[#131825] border border-[#1e2840] text-white rounded-lg p-2.5 text-xs">
+                                <option>Sharma Traders</option><option>Gupta Enterprises</option><option>Mehta & Sons</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-[10px] text-[#4a5878] font-mono-custom uppercase mb-1">Filing Period</label>
+                            <select id="gst-period-selector" class="w-full bg-[#131825] border border-[#1e2840] text-white rounded-lg p-2.5 text-xs">
+                                <option>March 2025</option><option>February 2025</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="block text-[10px] text-[#4a5878] font-mono-custom uppercase mb-1">Return Template Type</label>
+                            <select id="gst-template-selector" class="w-full bg-[#131825] border border-[#1e2840] text-white rounded-lg p-2.5 text-xs">
+                                <option>GSTR-1</option><option>GSTR-3B</option>
+                            </select>
+                        </div>
+                        <button onclick="runGSTReconAnalysis()" class="w-full py-3 bg-gradient-to-r from-[#00e5b0] to-[#00b894] text-[#07090f] text-xs font-bold rounded-xl shadow-lg">🤖 AI से Analyze & Prepare करें →</button>
+                    </div>
+                    <div class="bg-[#131825] border border-[#1e2840] rounded-xl p-5 text-xs space-y-3">
+                        <div class="text-[#3d8bff] font-bold">AUTOMATED AUDIT ROADMAP SYSTEM</div>
+                        <div class="space-y-2 text-gray-400">
+                            <p>✓ Cross-checking ledger transactions statements with uploaded registers.</p>
+                            <p>✓ Generating secure structural cryptographic encrypted JSON schema payloads format matches compliance portals.</p>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="gst-view-1" class="gst-sub-view hidden text-center py-12">
+                    <p class="text-xs text-[#8899b0] animate-pulse-custom">🧮 Parsing GSTR-2A data tables records against purchase sheets ledger ledger mapping...</p>
+                </div>
+
+                <div id="gst-view-2" class="gst-sub-view hidden space-y-4">
+                    <div class="flex justify-between items-center">
+                        <div>
+                            <h3 id="gst-dashboard-title" class="text-sm font-bold text-white">GSTR-1 Overview</h3>
+                            <p id="gst-dashboard-meta" class="text-xs text-[#4a5878] font-mono-custom">GSTIN: 07AABCS1234F1Z5</p>
+                        </div>
+                        <div class="flex gap-2">
+                            <button onclick="resetGSTPipeline()" class="bg-[#131825] border border-[#1e2840] text-[#8899b0] text-xs px-3 py-2 rounded-lg">↩ Back</button>
+                            <button onclick="fileGSTPortalGateway()" class="bg-gradient-to-r from-[#ff7043] to-[#e64a19] text-white text-xs font-bold px-4 py-2 rounded-lg shadow-lg">🚀 File Now →</button>
+                        </div>
+                    </div>
+                    <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div class="bg-[#131825] p-5 rounded-xl border border-[#1e2840] text-xs space-y-2">
+                            <div class="text-[#00e5b0] font-bold mb-1">FINANCIAL METRICS LIABILITY STATEMENT</div>
+                            <div class="flex justify-between py-1 border-b border-gray-800"><span>Taxable Turnover Matrix</span><span class="font-bold text-white font-mono-custom">₹8,42,500.00</span></div>
+                            <div class="flex justify-between py-1 border-b border-gray-800"><span>IGST Aggregate Liability</span><span class="font-bold text-[#3d8bff] font-mono-custom">₹45,000.00</span></div>
+                            <div class="flex justify-between py-1 border-b border-gray-800"><span>CGST Aggregate Liability</span><span class="font-bold text-[#3d8bff] font-mono-custom">₹18,000.00</span></div>
+                            <div class="flex justify-between py-1 border-b border-gray-800"><span>SGST Aggregate Liability</span><span class="font-bold text-[#3d8bff] font-mono-custom">₹18,000.00</span></div>
+                        </div>
+                        <div class="bg-[#131825] p-5 rounded-xl border border-[#1e2840] text-xs space-y-2">
+                            <div class="text-[#ffd740] font-bold mb-1">PORTAL INTEGRITY RISK CHECKS</div>
+                            <div class="bg-[#07090f] p-2 rounded flex justify-between"><span>GSTR-1 Core Ledger Sync</span><span class="text-[#00e5b0]">OK</span></div>
+                            <div class="bg-[#07090f] p-2 rounded flex justify-between"><span>2B Reconciliation Drift</span><span class="text-[#ffd740]">₹2,400 Mismatch</span></div>
+                        </div>
+                    </div>
+                </div>
+
+                <div id="gst-view-3" class="gst-sub-view hidden text-center py-12">
+                    <p class="text-xs text-[#8899b0] animate-pulse-custom">🌐 Initiating API Secure Gateway Tunnel connection with GSTN database schema structure...</p>
+                </div>
+
+                <div id="gst-view-4" class="gst-sub-view hidden text-center py-12 space-y-4">
+                    <div class="text-4xl">✅</div>
+                    <h3 class="text-base font-bold text-[#00e5b0]">Filing Document Dispatched and Logged!</h3>
+                    <div class="bg-[#131825] border border-[#00e5b0]/20 p-4 rounded-xl max-w-sm mx-auto font-mono-custom text-xs">
+                        <p class="text-[#4a5878]">GENERATED PORTAL ARN KEY</p>
+                        <p class="text-[#00e5b0] text-lg font-bold tracking-widest my-1.5">AA2204260928345</p>
+                    </div>
+                    <button onclick="resetGSTPipeline()" class="bg-[#131825] border border-[#1e2840] text-xs text-white px-4 py-2 rounded-lg">📋 Next Transaction Profile Client</button>
+                </div>
+            </div>
+
+            <div id="pane-gst3b" class="tab-pane hidden space-y-5">
+                <div class="flex items-center gap-0 mb-6" id="gst3b-stepper-container"></div>
+
+                <div id="gst3b-view-0" class="max-w-md bg-[#131825] border border-[#1e2840] rounded-xl p-6 space-y-4 mx-auto">
+                    <div class="text-xs text-[#00e5b0] tracking-wider uppercase">GSTR-3B BALANCED COMPUTE PLATFORM ENGINE</div>
+                    <div>
+                        <label class="block text-[10px] text-[#4a5878] font-mono-custom mb-1">Select Profile Client</label>
+                        <select id="g3b-profile-client" class="w-full bg-[#131825] border border-[#1e2840] text-white text-xs p-2.5 rounded-lg">
+                            <option>Sharma Traders</option><option>Gupta Enterprises</option>
+                        </select>
+                    </div>
+                    <button onclick="executeG3BProcessingData()" class="w-full py-2.5 bg-gradient-to-r from-[#00e5b0] to-[#00b894] text-[#07090f] text-xs font-bold rounded-lg shadow-md">🧮 Compute GSTR-3B Forms Sheet</button>
+                </div>
+
+                <div id="gst3b-view-1" class="gst3b-sub-view hidden text-center py-12">
+                    <p class="text-xs text-[#8899b0] animate-pulse-custom">Parsing Table 4 Input Tax Credits Ledger Balances from GSTR-2B data structures...</p>
+                </div>
+
+                <div id="gst3b-view-2" class="gst3b-sub-view hidden space-y-4">
+                    <div class="flex justify-between items-center">
+                        <h4 class="text-xs font-bold text-[#00e5b0] uppercase tracking-wider">GSTR-3B Structural Return Sheet Statements</h4>
+                        <button onclick="dispatchG3BOffsetFiling()" class="bg-gradient-to-r from-[#ff7043] to-[#e64a19] text-white font-bold text-xs px-4 py-2 rounded-lg shadow-lg">💳 Offset Liability & File →</button>
+                    </div>
+                    <div class="bg-[#131825] p-4 rounded-xl border border-[#1e2840] text-xs space-y-2">
+                        <div class="text-[#3d8bff] font-bold">TABLE 3.1 — OUTWARD TAX LIABILITY BREAKDOWN STATEMENTS</div>
+                        <table class="w-full font-mono-custom text-[11px] text-left">
+                            <thead><tr class="text-[#4a5878] border-b border-gray-800"><th class="p-2">Nature</th><th class="p-2 text-right">IGST</th><th class="p-2 text-right">CGST</th><th class="p-2 text-right">SGST</th></tr></thead>
+                            <tbody>
+                                <tr class="border-b border-gray-800/30"><td class="p-2 text-gray-400">(a) Outward Taxable Supply Logs</td><td class="p-2 text-right">₹45,000</td><td class="p-2 text-right">₹18,000</td><td class="p-2 text-right">₹18,000</td></tr>
+                                <tr class="bg-gray-800/20 font-bold"><td class="p-2 text-white">Total Output Liabilities</td><td class="p-2 text-right text-[#00e5b0]">₹45,000</td><td class="p-2 text-right text-[#00e5b0]">₹18,000</td><td class="p-2 text-right text-[#00e5b0]">₹18,000</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <div id="gst3b-view-3" class="gst3b-sub-view hidden text-center py-12 text-xs font-mono-custom text-[#ffd740]">
+                    <p class="animate-pulse-custom">⏳ Offsetting liability against credit pools ledger cache structures...</p>
+                </div>
+
+                <div id="gst3b-view-4" class="gst3b-sub-view hidden text-center py-12 space-y-3">
+                    <div class="text-4xl">🎊</div>
+                    <h3 class="text-sm font-bold text-[#00e5b0]">GSTR-3B Tax Ledger Record Filed!</h3>
+                    <button onclick="resetG3BPlatformPipeline()" class="bg-[#131825] border border-[#1e2840] text-xs text-white px-3 py-1.5 rounded">Return to Workspace Launcher</button>
+                </div>
+            </div>
+
+            <div id="pane-ai" class="tab-pane hidden flex flex-col h-[calc(100vh-160px)] space-y-4">
+                <div class="flex flex-wrap gap-2 text-xs text-[#8899b0]">
+                    <button onclick="autoInjectChatToken('Tally में purchase entry कैसे करें?')" class="bg-[#131825] border border-[#1e2840] rounded-full px-3 py-1 hover:text-white">Tally में purchase entry कैसे करें?</button>
+                    <button onclick="autoInjectChatToken('GSTR-3B की due date क्या है?')" class="bg-[#131825] border border-[#1e2840] rounded-full px-3 py-1 hover:text-white">GSTR-3B की due date क्या है?</button>
+                    <button onclick="autoInjectChatToken('TDS 194C rate बताओ')" class="bg-[#131825] border border-[#1e2840] rounded-full px-3 py-1 hover:text-white">TDS 194C rate बताओ</button>
+                </div>
+
+                <div id="chat-messages-container" class="flex-1 bg-[#131825] border border-[#1e2840] rounded-xl p-4 overflow-y-auto space-y-3 flex flex-col">
+                    <div class="self-start bg-[#0e1219] border border-[#1e2840] rounded-xl rounded-bl-sm p-3 max-w-[80%] text-xs text-[#dce6f5]">
+                        <div class="text-[9px] text-[#00e5b0] font-mono-custom mb-1">✦ CA ASSISTANT</div>
+                        <p>नमस्ते! मैं आपका CA AI Assistant हूँ। Tally entry, GST filing, TDS — कुछ भी पूछें। 🙏</p>
+                    </div>
+                </div>
+
+                <div class="flex gap-3">
+                    <input type="text" id="chat-text-input-field" placeholder="GST, Tally, TDS, Accounting — कुछ भी पूछें..." class="flex-1 bg-[#131825] border border-[#1e2840] rounded-xl px-4 py-3 text-xs text-white">
+                    <button onclick="submitChatPromptValue()" class="bg-gradient-to-r from-[#00e5b0] to-[#00b894] text-[#07090f] font-bold text-xs px-5 rounded-xl">Send ➤</button>
+                </div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        let isSidebarOpenState = true;
+        let globalActiveTabName = 'dashboard';
+
+        // Universal Tab App Navigation Routing Switcher Controller
+        function switchTab(tabId) {
+            globalActiveTabName = tabId;
+
+            // Clear active blocks layout rendering classes visibility states
+            document.querySelectorAll('.tab-pane').forEach(el => {
+                el.classList.replace('block', 'hidden'); el.classList.replace('flex', 'hidden');
+            });
+            const selectedPane = document.getElementById(`pane-${tabId}`);
+            if (tabId === 'ai') selectedPane.classList.replace('hidden', 'flex');
+            else selectedPane.classList.replace('hidden', 'block');
+
+            // Synchronize Sidebar Items highlights state configuration tokens
+            document.querySelectorAll('.nav-item').forEach(el => {
+                el.className = "nav-item p-3 px-4 flex items-center gap-3 cursor-pointer border-l-2 border-transparent hover:bg-gray-800/20 transition-all";
+            });
+            document.querySelectorAll('.nav-item span').forEach(el => el.className = "text-lg text-[#4a5878]");
+            document.querySelectorAll('.nav-item div div:first-child').forEach(el => el.className = "text-xs font-medium text-[#8899b0]");
+
+            const targetNav = document.getElementById(`nav-${tabId}`);
+            if (targetNav) {
+                targetNav.className = "nav-item p-3 px-4 flex items-center gap-3 cursor-pointer border-l-2 border-[#00e5b0] bg-[#00e5b0]/10 transition-all";
+                targetNav.querySelector('span').className = "text-lg text-[#00e5b0]";
+                targetNav.querySelector('div div:first-child').className = "text-xs font-medium text-white";
+            }
+
+            // Sync Dynamic text parameters labels headers strings view
+            const titlesMap = {
+                dashboard: ["Dashboard", "डैशबोर्ड"], tally: ["Tally AI Entry", "टैली ऑटो एंट्री"],
+                gst_auto: ["Auto GST Filing", "ऑटो GST फाइलिंग"], gst3b: ["GSTR-3B Auto", "3B ऑटो फाइलिंग"],
+                ai: ["AI Assistant", "AI सहायक"]
+            };
+            document.getElementById('top-title').innerText = titlesMap[tabId][0];
+            document.getElementById('top-subtitle').innerText = titlesMap[tabId][1];
+
+            // Trigger initialization layouts lifecycle for steppers modules states arrays
+            if (tabId === 'tally') buildHorizontalStepper('tally-stepper-container', ["Upload","Extract","Verify","Push","Done"], 0);
+            if (tabId === 'gst_auto') buildHorizontalStepper('gst-stepper-container', ["Setup","Analyze","Review","File","Done"], 0);
+            if (tabId === 'gst3b') buildHorizontalStepper('gst3b-stepper-container', ["Setup","Compute","Review","Challan","Done"], 0);
+        }
+
+        // Collapse Sidebar Workspace Drawer Frame configuration Layouts width controller
+        function toggleSidebar() {
+            isSidebarOpenState = !isSidebarOpenState;
+            const bar = document.getElementById('sidebar');
+            const titles = document.querySelectorAll('.nav-item div div:first-child, .nav-item div div:last-child, #brand-meta');
+            const footText = document.getElementById('footer-text');
+            const badges = document.querySelectorAll('.badge-token');
+
+            if (isSidebarOpenState) {
+                bar.style.width = '230px';
+                titles.forEach(el => el.classList.remove('hidden'));
+                footText.innerText = "FY 2025-26 · GST + Tally AI";
+                badges.forEach(el => el.classList.remove('hidden'));
+            } else {
+                bar.style.width = '64px';
+                titles.forEach(el => el.classList.add('hidden'));
+                footText.innerText = "FY26";
+                badges.forEach(el => el.classList.add('hidden'));
+            }
+        }
+
+        // Global Alert Toast notifications logic runtime function
+        function triggerToast(msg) {
+            const el = document.getElementById('notif-toast');
+            document.getElementById('notif-msg').innerText = msg;
+            el.classList.remove('hidden');
+            setTimeout(() => el.classList.add('hidden'), 3000);
+        }
+
+        // Pure Stepper Component UI Engine builder
+        function buildHorizontalStepper(targetElementId, stageNodesList, currentActiveIdx) {
+            const wrap = document.getElementById(targetElementId);
+            wrap.innerHTML = '';
+            stageNodesList.forEach((node, i) => {
+                const checked = i < currentActiveIdx;
+                const matches = i === currentActiveIdx;
+
+                let bg = '#131825'; let bColor = '#1e2840'; let textCol = '#4a5878';
+                if (checked) { bg = '#00e5b0'; bColor = '#00e5b0'; }
+                else if (matches) { bg = '#3d8bff'; bColor = '#3d8bff'; textCol = '#3d8bff'; }
+
+                wrap.innerHTML += `
+                    <div class="flex items-center flex-1 last:flex-none">
+                        <div class="flex flex-col items-center gap-1">
+                            <div class="w-8 h-8 rounded-full border flex items-center justify-center font-mono-custom text-xs font-bold" style="background:${bg}; border-color:${bColor}; color:${i<=currentActiveIdx?'#07090f':'#4a5878'}">
+                                ${checked ? '✓' : i+1}
+                            </div>
+                            <span class="text-[9px] font-mono-custom uppercase tracking-wider" style="color:${textCol}">${node}</span>
+                        </div>
+                        ${i < stageNodesList.length - 1 ? `<div class="flex-1 h-[2px] mx-2 mb-4 transition-colors" style="background:${checked?'#00e5b0':'#1e2840'}"></div>` : ''}
+                    </div>
+                `;
+            });
+        }
+
+        // ── MODULE SYSTEM 1: TALLY PIPELINE ROUTINES ──
+        function tallyFileSelected(e) {
+            const files = e.target.files;
+            if(!files.length) return;
+            const fb = document.getElementById('tally-upload-feedback');
+            fb.innerText = `✅ ${files.length} document file data layout context config selected`;
+            fb.classList.remove('hidden');
+
+            const actBtn = document.getElementById('tally-action-btn');
+            actBtn.disabled = false;
+            actBtn.className = "w-full py-3 bg-gradient-to-r from-[#00e5b0] to-[#00b894] text-[#07090f] rounded-xl font-bold text-sm cursor-pointer shadow-lg";
+        }
+
+        function runTallyExtractionAnimation() {
+            document.getElementById('tally-view-0').classList.add('hidden');
+            document.getElementById('tally-view-1').classList.remove('hidden');
+            buildHorizontalStepper('tally-stepper-container', ["Upload","Extract","Verify","Push","Done"], 1);
+
+            setTimeout(() => {
+                document.getElementById('tally-view-1').classList.add('hidden');
+                document.getElementById('tally-view-2').classList.remove('hidden');
+                buildHorizontalStepper('tally-stepper-container', ["Upload","Extract","Verify","Push","Done"], 2);
+
+                document.getElementById('tally-sheet-records').innerHTML = `
+                    <div class="bg-[#131825] border border-[#1e2840] p-4 rounded-xl space-y-3 text-xs">
+                        <div class="flex justify-between items-start border-b border-gray-800 pb-2">
+                            <div><p class="font-bold text-white text-sm">Sample Supplier Pvt Ltd</p><p class="text-[10px] text-[#4a5878] font-mono-custom">INV-2025-001 · GSTIN: 27AABCS1234F1Z5</p></div>
+                            <span class="bg-[#3d8bff]/10 text-[#3d8bff] text-[10px] px-2.5 py-0.5 rounded-full font-bold uppercase">Purchase Voucher</span>
+                        </div>
+                        <div class="grid grid-cols-2 sm:grid-cols-5 gap-2 font-mono-custom text-[11px]">
+                            <div><p class="text-[#4a5878]">Subtotal</p><p class="text-white font-medium">₹10,000.00</p></div>
+                            <div><p class="text-[#4a5878]">CGST</p><p class="text-white font-medium">₹0.00</p></div>
+                            <div><p class="text-[#4a5878]">SGST</p><p class="text-white font-medium">₹0.00</p></div>
+                            <div><p class="text-[#4a5878]">IGST</p><p class="text-[#3d8bff] font-bold">₹1,800.00</p></div>
+                            <div><p class="text-[#4a5878]">Grand Total</p><p class="text-[#00e5b0] font-bold text-xs">₹11,800.00</p></div>
+                        </div>
+                    </div>
+                `;
+            }, 1800);
+        }
+
+        function commitTallyGatewayPush() {
+            document.getElementById('tally-view-2').classList.add('hidden');
+            document.getElementById('tally-view-3').classList.remove('hidden');
+            buildHorizontalStepper('tally-stepper-container', ["Upload","Extract","Verify","Push","Done"], 3);
+
+            setTimeout(() => {
+                document.getElementById('tally-view-3').classList.add('hidden');
+                document.getElementById('tally-view-4').classList.remove('hidden');
+                buildHorizontalStepper('tally-stepper-container', ["Upload","Extract","Verify","Push","Done"], 4);
+                triggerToast("Data structure array payloads loaded into Tally database records schema.");
+            }, 2000);
+        }
+
+        function resetTallyPipeline() {
+            document.querySelectorAll('.tally-sub-view').forEach(el => el.classList.add('hidden'));
+            document.getElementById('tally-view-0').classList.remove('hidden');
+            document.getElementById('tally-upload-feedback').classList.add('hidden');
+            document.getElementById('tally-file-picker').value = '';
+            
+            const btn = document.getElementById('tally-action-btn');
+            btn.disabled = true;
+            btn.className = "w-full py-3 bg-gray-800 text-gray-500 opacity-40 rounded-xl font-bold text-sm cursor-not-allowed transition duration-200";
+            buildHorizontalStepper('tally-stepper-container', ["Upload","Extract","Verify","Push","Done"], 0);
+        }
+
+        // ── MODULE SYSTEM 2: AUTOMATED GST RETURNS LOGIC ──
+        function runGSTReconAnalysis() {
+            document.getElementById('gst-view-0').classList.add('hidden');
+            document.getElementById('gst-view-1').classList.remove('hidden');
+            buildHorizontalStepper('gst-stepper-container', ["Setup","Analyze","Review","File","Done"], 1);
+
+            setTimeout(() => {
+                document.getElementById('gst-view-1').classList.add('hidden');
+                document.getElementById('gst-view-2').classList.remove('hidden');
+                buildHorizontalStepper('gst-stepper-container', ["Setup","Analyze","Review","File","Done"], 2);
+
+                const c = document.getElementById('gst-client-selector').value;
+                const p = document.getElementById('gst-period-selector').value;
+                const t = document.getElementById('gst-template-selector').value;
+
+                document.getElementById('gst-dashboard-title').innerText = `${t} Form Statements — ${c}`;
+                document.getElementById('gst-dashboard-meta').innerText = `GSTIN: 07AABCS1234F1Z5 · Profile Period Base: ${p} · System verification complete`;
+            }, 1500);
+        }
+
+        function fileGSTPortalGateway() {
+            document.getElementById('gst-view-2').classList.add('hidden');
+            document.getElementById('gst-view-3').classList.remove('hidden');
+            buildHorizontalStepper('gst-stepper-container', ["Setup","Analyze","Review","File","Done"], 3);
+
+            setTimeout(() => {
+                document.getElementById('gst-view-3').classList.add('hidden');
+                document.getElementById('gst-view-4').classList.remove('hidden');
+                buildHorizontalStepper('gst-stepper-container', ["Setup","Analyze","Review","File","Done"], 4);
+            }, 2000);
+        }
+
+        function resetGSTPipeline() {
+            document.querySelectorAll('.gst-sub-view').forEach(el => el.classList.add('hidden'));
+            document.getElementById('gst-view-0').classList.remove('hidden');
+            buildHorizontalStepper('gst-stepper-container', ["Setup","Analyze","Review","File","Done"], 0);
+        }
+
+        // ── GSTR-3B RETRIEVAL LAYER LOGICS ──
+        function executeG3BProcessingData() {
+            document.getElementById('gst3b-view-0').classList.add('hidden');
+            document.getElementById('gst3b-view-1').classList.remove('hidden');
+            buildHorizontalStepper('gst3b-stepper-container', ["Setup","Compute","Review","Challan","Done"], 1);
+
+            setTimeout(() => {
+                document.getElementById('gst3b-view-1').classList.add('hidden');
+                document.getElementById('gst3b-view-2').classList.remove('hidden');
+                buildHorizontalStepper('gst3b-stepper-container', ["Setup","Compute","Review","Challan","Done"], 2);
+            }, 1500);
+        }
+
+        function dispatchG3BOffsetFiling() {
+            document.getElementById('gst3b-view-2').classList.add('hidden');
+            document.getElementById('gst3b-view-3').classList.remove('hidden');
+            buildHorizontalStepper('gst3b-stepper-container', ["Setup","Compute","Review","Challan","Done"], 3);
+
+            setTimeout(() => {
+                document.getElementById('gst3b-view-3').classList.add('hidden');
+                document.getElementById('gst3b-view-4').classList.remove('hidden');
+                buildHorizontalStepper('gst3b-stepper-container', ["Setup","Compute","Review","Challan","Done"], 4);
+            }, 2000);
+        }
+
+        function resetG3BPlatformPipeline() {
+            document.getElementById('gst3b-view-4').classList.add('hidden');
+            document.getElementById('gst3b-view-0').classList.remove('hidden');
+            buildHorizontalStepper('gst3b-stepper-container', ["Setup","Compute","Review","Challan","Done"], 0);
+        }
+
+        // ── MODULE SYSTEM 3: CHAT AI CORE INTERACTION INTERFACES ──
+        function autoInjectChatToken(promptText) {
+            document.getElementById('chat-text-input-field').value = promptText;
+            submitChatPromptValue();
+        }
+
+        function submitChatPromptValue() {
+            const inp = document.getElementById('chat-text-input-field');
+            const prompt = inp.value.trim();
+            if (!prompt) return;
+
+            const box = document.getElementById('chat-messages-container');
+            // Inject User Speech Template Bubble
+            box.innerHTML += `
+                <div class="self-end bg-[#00e5b0]/10 border border-[#00e5b0]/20 rounded-xl rounded-br-sm p-3 max-w-[80%] text-xs text-[#00e5b0]">
+                    <p>${prompt}</p>
+                </div>
+            `;
+            inp.value = '';
+            box.scrollTop = box.scrollHeight;
+
+            // Trigger Mock LLM Engine Timeout response
+            setTimeout(() => {
+                box.innerHTML += `
+                    <div class="self-start bg-[#0e1219] border border-[#1e2840] rounded-xl rounded-bl-sm p-3 max-w-[80%] text-xs text-[#dce6f5]">
+                        <div class="text-[9px] text-[#00e5b0] font-mono-custom mb-1">✦ CA ASSISTANT</div>
+                        <p>मैंने आपके सवाल "${prompt}" का विश्लेषण कर लिया है। भारतीय कराधान (Taxation) नियमों के अनुसार, सुनिश्चित करें कि आपके सभी इनवॉइस डेटा रिकॉर्ड्स पूरी तरह सत्यापित (Verified) हैं, ताकि ऑडिट ट्रेल या टैक्स फाइलिंग में कोई विसंगति (Mismatch) न आए। यदि कोई विशिष्ट सेक्शन (जैसे TDS 194C) है, तो नियमानुसार उचित दर लागू करें।</p>
+                    </div>
+                `;
+                box.scrollTop = box.scrollHeight;
+            }, 800);
+        }
+
+        // Keydown Event Handler to support Keyboard Enter key inside Chat panel input field
+        document.getElementById('chat-text-input-field').addEventListener('keydown', function(ev) {
+            if(ev.key === 'Enter') submitChatPromptValue();
+        });
+    </script>
+</body>
+</html>
